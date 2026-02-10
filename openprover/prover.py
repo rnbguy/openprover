@@ -83,8 +83,8 @@ class Prover:
         # LLM client
         self.llm = LLMClient(model, self.work_dir / "archive" / "calls")
 
-        # Derive theorem name for header
-        first_line = self.theorem_text.strip().split("\n")[0][:40]
+        # Derive theorem name for header (use full first line)
+        first_line = self.theorem_text.strip().split("\n")[0]
         self.theorem_name = first_line.lstrip("#").strip()
 
     def run(self):
@@ -105,20 +105,23 @@ class Prover:
             )
 
         paused = False
-        while self.step_num < self.max_steps and not self.shutting_down:
-            self.step_num += 1
-            action = self._do_step()
-            if action == "stop":
-                break
-            if action == "pause":
-                paused = True
-                self.tui.log("Paused.", color="yellow")
-                break
-            if action == "restart":
-                self._reset()
-                continue
+        try:
+            while self.step_num < self.max_steps and not self.shutting_down:
+                self.step_num += 1
+                action = self._do_step()
+                if action == "stop":
+                    break
+                if action == "pause":
+                    paused = True
+                    self.tui.log("Paused.", color="yellow")
+                    break
+                if action == "restart":
+                    self._reset()
+                    continue
+        except KeyboardInterrupt:
+            self.shutting_down = True
 
-        if not paused:
+        if not paused and self.tui.step_entries:
             self._write_discussion()
 
     def _do_step(self) -> str:
@@ -199,14 +202,17 @@ class Prover:
             return "continue"
 
         action = result.get("action", "continue")
+
+        # Update whiteboard (only if step produced one)
+        if result.get("whiteboard"):
+            self.whiteboard = result["whiteboard"]
+            (self.work_dir / "WHITEBOARD.md").write_text(self.whiteboard)
+            self.tui.whiteboard = self.whiteboard
+
+        step_idx = len(self.tui.step_entries)
         self.tui.step_complete(
             self.step_num, self.max_steps, action, result.get("summary", ""),
         )
-
-        # Update whiteboard
-        self.whiteboard = result.get("whiteboard", self.whiteboard)
-        (self.work_dir / "WHITEBOARD.md").write_text(self.whiteboard)
-        self.tui.whiteboard = self.whiteboard
 
         # Handle new/updated lemmas
         self._process_lemmas(result)
@@ -217,10 +223,15 @@ class Prover:
         # Handle verification
         if action == "verify" and result.get("verify_content"):
             self._do_verification(result["verify_target"], result["verify_content"])
+            self.tui.update_step_detail(step_idx,
+                f"Verify: {result.get('verify_target', '')}\n\n"
+                f"{self.verification_result}")
 
         # Handle literature search
         if action == "literature_search" and result.get("search_query"):
             self._do_literature_search(result["search_query"])
+            self.tui.update_step_detail(step_idx,
+                f"Query: {result['search_query']}\n\n{self.search_result}")
 
         # Handle terminal actions
         if action == "declare_proof":
@@ -228,6 +239,7 @@ class Prover:
             if not proof:
                 self.tui.log("✗ Proof rejected: No proof text provided", color="red")
                 return "continue"
+            self.tui.update_step_detail(step_idx, f"Proof:\n\n{proof}")
             passed = self._verify_proof(proof)
             if passed:
                 self.proof_text = proof
@@ -262,19 +274,20 @@ class Prover:
             verification_result=self.verification_result,
             search_result=self.search_result,
         )
-        self.tui.thinking()
+        self.tui.stream_start("planning")
         try:
             resp = self.llm.call(
                 prompt=prompt,
                 system_prompt=prompts.SYSTEM_PROMPT,
                 json_schema=self.plan_schema,
                 label=f"plan_step_{self.step_num}",
+                stream_callback=self.tui.stream_text,
             )
         except RuntimeError as e:
-            self.tui.thinking_done()
+            self.tui.stream_end()
             self.tui.log(f"Error: {e}", color="red")
             return None
-        self.tui.thinking_done()
+        self.tui.stream_end()
 
         try:
             return json.loads(resp["result"])
@@ -298,7 +311,8 @@ class Prover:
         self.verification_result = ""
         self.search_result = ""
 
-        self.tui.stream_start()
+        action_label = plan["action"] if plan else "working"
+        self.tui.stream_start(action_label)
         try:
             resp = self.llm.call(
                 prompt=prompt,
@@ -330,7 +344,7 @@ class Prover:
     def _verify_proof(self, proof: str) -> bool:
         self.tui.log("Verifying: declared proof", color="yellow")
         prompt = prompts.format_verify_prompt(self.theorem_text, proof)
-        self.tui.stream_start()
+        self.tui.stream_start("verifying proof")
         try:
             resp = self.llm.call(
                 prompt=prompt,
@@ -355,7 +369,7 @@ class Prover:
     def _do_verification(self, target: str, content: str):
         self.tui.log(f"Verifying: {target}", color="yellow")
         prompt = prompts.format_verify_prompt(target, content)
-        self.tui.stream_start()
+        self.tui.stream_start("verifying")
         try:
             resp = self.llm.call(
                 prompt=prompt,
@@ -378,7 +392,7 @@ class Prover:
     def _do_literature_search(self, query: str):
         self.tui.log(f"Searching: {query}", color="magenta")
         prompt = prompts.format_literature_search_prompt(query, self.theorem_text)
-        self.tui.stream_start()
+        self.tui.stream_start("searching")
         try:
             resp = self.llm.call(
                 prompt=prompt,
@@ -389,6 +403,18 @@ class Prover:
             )
             self.tui.stream_end()
             self.search_result = resp["result"]
+            # Show a brief summary of findings
+            shown = 0
+            for line in self.search_result.splitlines():
+                line = line.strip().lstrip("#").strip()
+                if not line:
+                    continue
+                if len(line) > 120:
+                    line = line[:117] + "..."
+                self.tui.log(f"  {line}", dim=True)
+                shown += 1
+                if shown >= 3:
+                    break
         except RuntimeError as e:
             self.tui.stream_end()
             self.tui.log(f"Search error: {e}", color="red")
@@ -448,7 +474,7 @@ class Prover:
 
     def _write_discussion(self):
         if self.shutting_down:
-            self.tui.log("Interrupted — writing discussion...", color="yellow")
+            self.tui.log("Interrupted — writing discussion... (ctrl+c again to exit immediately)", color="yellow")
         lemma_index = self._build_lemma_index()
         prompt = prompts.format_discussion_prompt(
             theorem=self.theorem_text,
@@ -458,7 +484,7 @@ class Prover:
             max_steps=self.max_steps,
             proof=self.proof_text,
         )
-        self.tui.stream_start()
+        self.tui.stream_start("writing discussion")
         try:
             resp = self.llm.call(
                 prompt=prompt,
@@ -487,7 +513,7 @@ class Prover:
             step_num=self.step_num,
             max_steps=self.max_steps,
         )
-        self.tui.stream_start()
+        self.tui.stream_start("summarizing")
         try:
             self.llm.call(
                 prompt=prompt,
@@ -516,3 +542,4 @@ class Prover:
 
     def request_shutdown(self):
         self.shutting_down = True
+        self.tui.interrupt()

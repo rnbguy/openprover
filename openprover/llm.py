@@ -30,7 +30,7 @@ class LLMClient:
         Args:
             web_search: If True, enable WebSearch tool instead of disabling all tools.
             stream_callback: If provided, called with text chunks as they arrive.
-                Only works for non-schema calls. Signature: callback(text: str).
+                Signature: callback(text: str).
 
         Returns dict with keys: result (str), cost (float), duration_ms (int),
         raw (full JSON response).
@@ -38,8 +38,7 @@ class LLMClient:
         self.call_count += 1
         call_num = self.call_count
 
-        # Use streaming for non-schema calls when callback is provided
-        use_streaming = stream_callback and not json_schema
+        use_streaming = bool(stream_callback)
 
         cmd = [
             "claude", "-p",
@@ -158,7 +157,10 @@ class LLMClient:
 
         cost = result_data.get("total_cost_usd", 0.0)
         self.total_cost += cost
-        result_text = result_data.get("result", "")
+        if json_schema and "structured_output" in result_data:
+            result_text = json.dumps(result_data["structured_output"])
+        else:
+            result_text = result_data.get("result", "")
 
         self._archive(call_num, label, prompt, system_prompt, json_schema,
                       result_data, None, elapsed_ms)

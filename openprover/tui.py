@@ -1,5 +1,6 @@
 """Terminal UI for OpenProver — ANSI scroll regions, fixed header, inline input."""
 
+import os
 import queue
 import select
 import shutil
@@ -7,6 +8,7 @@ import signal
 import sys
 import termios
 import threading
+import time
 import tty
 
 from openprover import __version__
@@ -23,6 +25,8 @@ RED = "\033[38;5;174m"
 MAGENTA = "\033[38;5;183m"
 CYAN = "\033[38;5;116m"
 
+SPINNER = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+
 ACTION_STYLE = {
     "continue": CYAN,
     "explore_avenue": BLUE,
@@ -38,15 +42,17 @@ ACTION_STYLE = {
 HELP_TEXT = f"""\
   {BOLD}Controls{RESET}
 
-  {DIM}Instant keys:{RESET}
+  {DIM}Instant keys (work any time):{RESET}
     t           toggle reasoning trace
     w           toggle whiteboard view
     ?           this help
-    enter       dismiss overlay
+    esc/enter   dismiss overlay
 
   {DIM}When confirming a plan:{RESET}
-    {DIM}tab/arrows{RESET}  switch accept / feedback
-    enter       confirm selection
+    {DIM}up/down{RESET}     browse step history
+    tab         switch accept / feedback
+    enter       confirm or view step detail
+    esc         close detail / deselect
     s           summarize progress
     a           switch to autonomous mode
     p           pause (resume with --run-dir)
@@ -62,12 +68,23 @@ COLOR_MAP = {
     "yellow": YELLOW, "magenta": MAGENTA, "cyan": CYAN,
 }
 
+HEADER_ROWS = 4
+
+
+class _LogEntry:
+    """A line in the log. step_idx >= 0 marks completed-step lines."""
+    __slots__ = ("text", "step_idx")
+
+    def __init__(self, text: str, step_idx: int = -1):
+        self.text = text
+        self.step_idx = step_idx
+
 
 class TUI:
     def __init__(self):
         self.rows = 0
         self.cols = 0
-        self.log_lines: list[str] = []
+        self.log_lines: list[_LogEntry] = []
         self.trace_buf: list[str] = []
         self.trace_visible = True
         self.view = "main"
@@ -83,65 +100,70 @@ class TUI:
         self._old_sigwinch = None
         # Background key reader
         self._key_queue: queue.Queue[str] = queue.Queue()
-        self._key_thread: threading.Thread | None = None
-        self._key_stop = False
-        self._thinking = False
+        self._bg_thread: threading.Thread | None = None
+        self._bg_stop = False
+        # Spinner state
+        self._spinner_label = ""
+        self._spinner_tick = 0
+        self._spinner_time = 0.0
+        # Step history — each entry: {action, summary, step_num, detail}
+        self.step_entries: list[dict] = []
+        self._nav_step = -1  # -1 = options focused, 0..N-1 = step index
+        self._step_detail_text = ""
+        self._step_detail_title = ""
         # Confirmation state
         self._confirming = False
-        self._confirm_selected = 0  # 0=accept, 1=feedback
+        self._confirm_selected = 0
         self._confirm_buf: list[str] = []
+        # Thread safety for stdout
+        self._write_lock = threading.Lock()
+
+    _content_start = HEADER_ROWS + 1
 
     def setup(self, theorem_name: str, work_dir: str,
               step_num: int = 0, max_steps: int = 50):
         self.theorem_name = theorem_name
         self.step_num = step_num
         self.max_steps = max_steps
-        self.rows, self.cols = shutil.get_terminal_size()
+        size = shutil.get_terminal_size()
+        self.cols, self.rows = size.columns, size.lines
 
-        # Save terminal state and enter cbreak
         try:
             self._old_termios = termios.tcgetattr(sys.stdin)
             tty.setcbreak(sys.stdin.fileno())
         except (termios.error, OSError):
             self._old_termios = None
 
-        # Alternate screen + clear
-        self._write('\033[?1049h\033[2J')
-        self._draw_header()
-        # Scroll region: row 4 to bottom (header is rows 1-3)
-        self._write(f'\033[4;{self.rows}r')
-        # Cursor into scroll region, hide cursor by default
-        self._write('\033[4;1H\033[?25l')
+        with self._write_lock:
+            self._write_raw('\033[?1049h\033[2J')
+            self._draw_header()
+            self._write_raw(f'\033[{self._content_start};{self.rows}r')
+            sys.stdout.flush()
+        self._write(f'\033[{self._content_start};1H\033[?25l')
         self._active = True
 
-        # Resize handler
         self._old_sigwinch = signal.getsignal(signal.SIGWINCH)
         signal.signal(signal.SIGWINCH, self._on_resize)
 
-        # Start background key reader
-        self._key_stop = False
-        self._key_thread = threading.Thread(target=self._key_reader, daemon=True)
-        self._key_thread.start()
+        self._bg_stop = False
+        self._bg_thread = threading.Thread(target=self._bg_loop, daemon=True)
+        self._bg_thread.start()
 
     def cleanup(self):
         if not self._active:
             return
         self._active = False
-        # Stop background key reader
-        self._key_stop = True
-        if self._key_thread:
-            self._key_thread.join(timeout=0.2)
-            self._key_thread = None
-        # Reset scroll region, exit alternate screen, show cursor
+        self._bg_stop = True
+        if self._bg_thread:
+            self._bg_thread.join(timeout=0.2)
+            self._bg_thread = None
         self._write('\033[r\033[?1049l\033[?25h')
-        # Restore terminal
         if self._old_termios:
             try:
                 termios.tcsetattr(sys.stdin, termios.TCSADRAIN, self._old_termios)
             except (termios.error, OSError):
                 pass
             self._old_termios = None
-        # Restore old SIGWINCH handler
         if self._old_sigwinch is not None:
             try:
                 signal.signal(signal.SIGWINCH, self._old_sigwinch)
@@ -149,160 +171,235 @@ class TUI:
                 pass
 
     def _on_resize(self, signum, frame):
-        self.rows, self.cols = shutil.get_terminal_size()
+        size = shutil.get_terminal_size()
+        self.cols, self.rows = size.columns, size.lines
         self._write('\033[2J')
-        self._draw_header()
-        self._write(f'\033[4;{self.rows}r')
+        self._write(f'\033[{self._content_start};{self.rows}r')
         self._redraw()
 
     # ── Low-level output ────────────────────────────────────────
 
-    @staticmethod
-    def _write(data: str):
-        sys.stdout.write(data)
-        sys.stdout.flush()
+    def _write(self, data: str):
+        with self._write_lock:
+            sys.stdout.write(data)
+            sys.stdout.flush()
 
-    # ── Header (rows 1-3) ─────────────────────────────────────
+    def _write_raw(self, data: str):
+        """Write without lock — caller must hold _write_lock."""
+        sys.stdout.write(data)
+
+    # ── Header (rows 1-4) ──────────────────────────────────────
 
     def _draw_header(self):
         w = self.cols
-        name = self.theorem_name[:40] if self.theorem_name else ""
         step = f"step {self.step_num}/{self.max_steps}" if self.step_num else ""
 
-        # Measure visible length for row 1 fill
-        title_len = 2 + len(f"OpenProver v{__version__}")  # "─ OpenProver v0.1.0"
-        if name:
-            title_len += 4 + len(name)  # "  ──  name" but ── is 2 chars visible
+        # Row 1
+        r1_text = f"─ OpenProver v{__version__}"
         if step:
-            title_len += 4 + len(step)
-        title_len += 1  # trailing space
-        fill = max(w - title_len - 2, 0)  # -2 for ╭ and ╮
-
-        # Row 1: ╭─ OpenProver v0.1.0 ── name ── step ────────╮
-        self._write('\033[1;1H\033[2K')
-        self._write(f'{BLUE}╭─{RESET} {BOLD}OpenProver{RESET} {DIM}v{__version__}{RESET}')
-        if name:
-            self._write(f' {BLUE}──{RESET} {WHITE}{name}{RESET}')
+            r1_text += f" ── {step}"
+        r1_text += " "
+        fill1 = max(w - len(r1_text) - 2, 0)
+        self._write_raw('\033[1;1H\033[2K')
+        self._write_raw(f'{BLUE}╭─{RESET} {BOLD}OpenProver{RESET} {DIM}v{__version__}{RESET}')
         if step:
-            self._write(f' {BLUE}──{RESET} {DIM}{step}{RESET}')
-        self._write(f' {BLUE}{"─" * fill}╮{RESET}')
+            self._write_raw(f' {BLUE}──{RESET} {DIM}{step}{RESET}')
+        self._write_raw(f' {BLUE}{"─" * fill1}╮{RESET}')
 
-        # Row 2: │                  ? help · t trace · w whiteboard │
-        hints = "? help · t trace · w whiteboard"
-        inner = w - 2  # space between │ and │
-        pad = max(inner - len(hints) - 1, 0)
-        self._write('\033[2;1H\033[2K')
-        self._write(f'{BLUE}│{RESET}')
-        self._write(f'{" " * pad}{DIM}{hints}{RESET} ')
-        self._write(f'{BLUE}│{RESET}')
+        # Row 2 — theorem
+        name = (self.theorem_name or "").replace("\n", " ").replace("\r", "")
+        max_name = max(w - 4, 10)
+        if len(name) > max_name:
+            display_name = name[:max_name - 3] + "..."
+        else:
+            display_name = name
+        name_pad = max(w - 3 - len(display_name), 0)
+        self._write_raw('\033[2;1H\033[2K')
+        self._write_raw(f'{BLUE}│{RESET} {WHITE}{display_name}{RESET}')
+        self._write_raw(f'{" " * name_pad}{BLUE}│{RESET}')
 
-        # Row 3: ╰──────────────────────────────────────────────╯
-        self._write('\033[3;1H\033[2K')
-        self._write(f'{BLUE}╰{"─" * max(w - 2, 0)}╯{RESET}')
+        # Row 3 — hints
+        help_style = BOLD if self.view == "help" else DIM
+        trace_style = BOLD if self.trace_visible else DIM
+        wb_style = BOLD if self.view == "whiteboard" else DIM
+        auto_style = BOLD if self.autonomous else DIM
+        hints_styled = (f'{help_style}? help{RESET} {DIM}·{RESET} '
+                        f'{trace_style}t trace{RESET} {DIM}·{RESET} '
+                        f'{wb_style}w whiteboard{RESET} {DIM}·{RESET} '
+                        f'{auto_style}a autonomous{RESET}')
+        hints_len = len("? help · t trace · w whiteboard · a autonomous")
+        pad = max(w - 2 - hints_len - 1, 0)
+        self._write_raw('\033[3;1H\033[2K')
+        self._write_raw(f'{BLUE}│{RESET}{" " * pad}{hints_styled} {BLUE}│{RESET}')
+
+        # Row 4
+        self._write_raw('\033[4;1H\033[2K')
+        self._write_raw(f'{BLUE}╰{"─" * max(w - 2, 0)}╯{RESET}')
 
     def update_step(self, step_num: int, max_steps: int):
         self.step_num = step_num
         self.max_steps = max_steps
-        self._write('\033[s')
-        self._draw_header()
-        self._write('\033[u')
+        with self._write_lock:
+            self._write_raw('\033[s')
+            self._draw_header()
+            self._write_raw('\033[u')
+            sys.stdout.flush()
 
     # ── Content area (scroll region) ───────────────────────────
 
-    def log(self, text: str, color: str = "", bold: bool = False, dim: bool = False):
-        styled = self._style(text, color, bold, dim)
-        self.log_lines.append(styled)
+    def _log(self, text: str, step_idx: int = -1):
+        entry = _LogEntry(text, step_idx)
+        self.log_lines.append(entry)
         if len(self.log_lines) > 200:
             self.log_lines = self.log_lines[-200:]
         if self.view == "main":
-            self._write(f' {styled}\n')
+            self._write(f' {text}\n')
+
+    def log(self, text: str, color: str = "", bold: bool = False, dim: bool = False):
+        self._log(self._style(text, color, bold, dim))
 
     def show_proposal(self, plan: dict):
+        # Separator between history and proposal
+        sep = f'{DIM}{"─" * max(self.cols - 4, 20)}{RESET}'
+        self._log(sep)
+        self._log(f'{DIM}Next step:{RESET}')
+
         action = plan.get("action", "")
         summary = plan.get("summary", "")
         color = ACTION_STYLE.get(action, "")
-        line = f'{color}▸{RESET} {BOLD}{action}{RESET} {DIM}—{RESET} {summary}'
-        self.log_lines.append(line)
-        if self.view == "main":
-            self._write(f' {line}\n')
+        self._log(f'{color}▸{RESET} {BOLD}{action}{RESET} {DIM}—{RESET} {summary}')
         if plan.get("reasoning"):
-            r_line = f'  {DIM}{plan["reasoning"]}{RESET}'
-            self.log_lines.append(r_line)
-            if self.view == "main":
-                self._write(f' {r_line}\n')
+            self._log(f'  {DIM}{plan["reasoning"]}{RESET}')
 
     def step_complete(self, step_num: int, max_steps: int,
-                      action: str, summary: str):
+                      action: str, summary: str, detail: str = ""):
         color = ACTION_STYLE.get(action, "")
         line = f'{color}■{RESET} {BOLD}{action}{RESET} {DIM}—{RESET} {summary}'
+        # Save trace before clearing
+        trace = "".join(self.trace_buf)
         self.trace_buf = []
-        self.log_lines.append(line)
+        idx = len(self.step_entries)
+        self._log(line, step_idx=idx)
+        self.step_entries.append({
+            "action": action, "summary": summary,
+            "step_num": step_num, "detail": detail,
+            "trace": trace,
+        })
         self.update_step(step_num, max_steps)
         if self.view == "main":
             self._redraw()
 
+    def update_step_detail(self, step_idx: int, detail: str):
+        """Update the detail field of an existing step entry."""
+        if 0 <= step_idx < len(self.step_entries):
+            self.step_entries[step_idx]["detail"] = detail
+
+    # ── Spinner ─────────────────────────────────────────────────
+
+    def _start_spinner(self, label: str = "thinking"):
+        self._spinner_label = label
+        self._spinner_tick = 0
+        self._spinner_time = time.monotonic()
+        if self.view == "main":
+            self._write(f'  {DIM}{SPINNER[0]} {label}{RESET}')
+
+    def _update_spinner(self):
+        now = time.monotonic()
+        if now - self._spinner_time < 0.08:
+            return
+        self._spinner_time = now
+        self._spinner_tick = (self._spinner_tick + 1) % len(SPINNER)
+        if self.view == "main":
+            ch = SPINNER[self._spinner_tick]
+            with self._write_lock:
+                self._write_raw(f'\r\033[2K  {DIM}{ch} {self._spinner_label}{RESET}')
+                sys.stdout.flush()
+
+    def _stop_spinner(self):
+        """Clear spinner from screen, reset label."""
+        if self._spinner_label and self.view == "main":
+            self._write('\r\033[2K')
+        self._spinner_label = ""
+
     # ── Streaming ───────────────────────────────────────────────
 
-    def stream_start(self):
+    def stream_start(self, label: str = "thinking"):
         self.trace_buf = []
         self.streaming = True
+        self._start_spinner(label)
 
     def stream_text(self, text: str):
-        # Check keys BEFORE appending to trace_buf to prevent
-        # duplication if _check_keys triggers a _redraw
         self._check_keys()
+        if not self.trace_buf:
+            # First chunk — replace spinner with trace (or keep spinner if trace off)
+            if self.trace_visible and self.view == "main":
+                self._stop_spinner()
         self.trace_buf.append(text)
         if self.trace_visible and self.view == "main":
             self._write(f'{DIM}{text}{RESET}')
 
     def stream_end(self):
         self.streaming = False
+        self._spinner_label = ""
         if self.trace_visible and self.view == "main":
             self._write('\n')
-
-    # ── Thinking (non-streaming calls like plan) ────────────────
-
-    def thinking(self):
-        self.streaming = True
-        self._thinking = True
-        self.trace_buf = []
-        if self.view == "main":
-            self._write(f'  {DIM}thinking...{RESET}')
-
-    def thinking_done(self):
-        self._thinking = False
-        self.streaming = False
-        if self.view == "main":
+        elif self.view == "main":
+            # Trace was off — clear the spinner that was still showing
             self._write('\r\033[2K')
-        # Process any keys that were queued during thinking
-        self._check_keys()
 
-    # ── Background key reader ──────────────────────────────────
+    # ── Background thread (key reader + spinner) ────────────────
 
-    def _key_reader(self):
-        """Background thread: read stdin chars, queue or process them."""
-        while not self._key_stop:
+    def _bg_loop(self):
+        fd = sys.stdin.fileno()
+        while not self._bg_stop:
             try:
-                if select.select([sys.stdin], [], [], 0.05)[0]:
-                    ch = sys.stdin.read(1)
-                    if not ch:
+                if self._spinner_label and (self.streaming):
+                    self._update_spinner()
+
+                if not select.select([fd], [], [], 0.04)[0]:
+                    continue
+                data = os.read(fd, 32)
+                if not data:
+                    continue
+
+                i = 0
+                while i < len(data):
+                    b = data[i]
+                    if b == 0x1b:
+                        if i + 2 < len(data) and data[i + 1] == 0x5b:
+                            self._key_queue.put(chr(0x1b) + '[' + chr(data[i + 2]))
+                            i += 3
+                            continue
+                        if self._can_handle_directly() and self.view != "main":
+                            self.view = "main"
+                            self._redraw()
+                        else:
+                            self._key_queue.put('\x1b')
+                        i += 1
                         continue
-                    # During thinking, main thread is blocked — safe to
-                    # handle view toggles directly from this thread
-                    if self._thinking and ch in ('t', 'w', '?'):
-                        self._process_key(ch)
-                    elif (self._thinking and ch in ('\n', '\r')
-                          and self.view != "main"):
-                        self._process_key(ch)
-                    else:
-                        self._key_queue.put(ch)
+
+                    ch = chr(b)
+                    if self._can_handle_directly():
+                        if ch in ('t', 'w', '?'):
+                            self._process_key(ch)
+                            i += 1
+                            continue
+                        if ch in ('\n', '\r') and self.view != "main":
+                            self._process_key(ch)
+                            i += 1
+                            continue
+
+                    self._key_queue.put(ch)
+                    i += 1
             except (OSError, ValueError):
                 break
+
+    def _can_handle_directly(self) -> bool:
+        return self.streaming and not self._confirming
 
     # ── Key handling ────────────────────────────────────────────
 
     def _check_keys(self):
-        """Drain the key queue and process each key."""
         while True:
             try:
                 ch = self._key_queue.get_nowait()
@@ -311,13 +408,15 @@ class TUI:
             self._process_key(ch)
 
     def _process_key(self, ch: str):
-        """Handle a single key press (view toggles, autonomous commands)."""
         if ch == 't':
             self._toggle_trace()
         elif ch == 'w':
             self._toggle_view("whiteboard")
         elif ch == '?':
             self._toggle_view("help")
+        elif ch == '\x1b' and self.view != "main":
+            self.view = "main"
+            self._redraw()
         elif ch in ('\n', '\r') and self.view != "main":
             self.view = "main"
             self._redraw()
@@ -333,19 +432,19 @@ class TUI:
         self.pending_action = None
         return action
 
+    def interrupt(self):
+        """Cancel any pending confirmation by injecting ctrl+c into key queue."""
+        self._key_queue.put('\x03')
+
     # ── Confirmation UI ────────────────────────────────────────
 
     def get_confirmation(self) -> str:
-        """Two-option confirmation. Returns "" for accept, feedback text,
-        or single command char (s/a/p/r/q)."""
         self._confirming = True
         self._confirm_selected = 0
         self._confirm_buf = []
-
-        # Draw initial confirmation
-        self._write('\033[s')  # save cursor (start of confirmation)
-        self._draw_confirmation()
-        self._write('\033[?25h')  # show cursor
+        self._nav_step = -1
+        self._redraw()
+        self._write('\033[?25h')
 
         try:
             while True:
@@ -355,109 +454,119 @@ class TUI:
                     continue
 
                 if ch == '\x1b':
-                    # Escape sequence — check for arrow keys
-                    try:
-                        ch2 = self._key_queue.get(timeout=0.05)
-                    except queue.Empty:
-                        # Plain escape — clear feedback buf
+                    if self.view != "main":
+                        self.view = "main"
+                    elif self._nav_step >= 0:
+                        self._nav_step = -1
+                    else:
                         self._confirm_buf.clear()
-                        self._update_confirmation()
-                        continue
-                    if ch2 == '[':
-                        try:
-                            ch3 = self._key_queue.get(timeout=0.05)
-                        except queue.Empty:
-                            continue
-                        if ch3 == 'A':  # Up arrow
-                            self._confirm_selected = 0
-                        elif ch3 == 'B':  # Down arrow
-                            self._confirm_selected = 1
-                        self._update_confirmation()
-                    # Drain any remaining escape bytes
-                    while True:
-                        try:
-                            self._key_queue.get_nowait()
-                        except queue.Empty:
-                            break
+                    self._redraw()
+                    continue
 
-                elif ch in ('\n', '\r'):
+                if len(ch) == 3 and ch[:2] == '\x1b[':
+                    if ch[2] == 'A':
+                        self._nav_up()
+                    elif ch[2] == 'B':
+                        self._nav_down()
+                    self._redraw()
+                    continue
+
+                if ch in ('\n', '\r'):
                     if self.view != "main":
                         self.view = "main"
                         self._redraw()
                         continue
+                    if self._nav_step >= 0:
+                        entry = self.step_entries[self._nav_step]
+                        self._step_detail_title = (
+                            f"Step {entry['step_num']}: {entry['action']}"
+                            f" — {entry['summary']}"
+                        )
+                        # Build detail: trace (if visible) + action-specific info
+                        parts = []
+                        trace = entry.get("trace", "")
+                        if trace and self.trace_visible:
+                            parts.append(trace.rstrip())
+                            parts.append("")
+                        detail = entry.get("detail", "")
+                        if detail:
+                            parts.append(detail)
+                        self._step_detail_text = "\n".join(parts) if parts else "(no detail)"
+                        self.view = "step_detail"
+                        self._redraw()
+                        continue
                     if self._confirm_selected == 0:
                         return ""
-                    else:
-                        return "".join(self._confirm_buf)
+                    return "".join(self._confirm_buf)
 
-                elif ch in ('\x7f', '\x08'):  # backspace
+                if ch in ('\x7f', '\x08'):
                     if self._confirm_selected == 1 and self._confirm_buf:
                         self._confirm_buf.pop()
-                        self._update_confirmation()
+                        self._redraw()
+                    continue
 
-                elif ch == '\x03':
+                if ch == '\x03':
                     raise KeyboardInterrupt
-
-                elif ch == '\x04':
+                if ch == '\x04':
                     raise EOFError
 
-                elif ch == '\t':
-                    # Tab switches between accept/feedback regardless of state
-                    self._confirm_selected = 1 - self._confirm_selected
-                    self._update_confirmation()
+                if ch == '\t':
+                    if self._nav_step >= 0:
+                        self._nav_step = -1
+                    else:
+                        self._confirm_selected = 1 - self._confirm_selected
+                    self._redraw()
                     continue
 
-                # View toggles (on accept line, or feedback with empty buf)
-                elif (ch == 't'
-                      and (self._confirm_selected == 0
-                           or not self._confirm_buf)):
-                    self._toggle_trace()
-                    continue
-                elif (ch == 'w'
-                      and (self._confirm_selected == 0
-                           or not self._confirm_buf)):
-                    self._toggle_view("whiteboard")
-                    continue
-                elif (ch == '?'
-                      and (self._confirm_selected == 0
-                           or not self._confirm_buf)):
-                    self._toggle_view("help")
+                can_toggle = (self._confirm_selected == 0 or not self._confirm_buf)
+                if can_toggle and ch in ('t', 'w', '?'):
+                    self._process_key(ch)
                     continue
 
-                # Command hotkeys on accept line
-                elif (self._confirm_selected == 0
-                      and ch in ('s', 'a', 'p', 'r', 'q')):
+                if (self._nav_step == -1 and self._confirm_selected == 0
+                        and ch in ('s', 'a', 'p', 'r', 'q')):
                     return ch
 
-                elif ch.isprintable():
+                if ch.isprintable():
+                    if self._nav_step >= 0:
+                        self._nav_step = -1
                     if self._confirm_selected == 0:
-                        # Auto-switch to feedback
                         self._confirm_selected = 1
-                        self._confirm_buf.append(ch)
-                    else:
-                        self._confirm_buf.append(ch)
-                    self._update_confirmation()
+                    self._confirm_buf.append(ch)
+                    self._redraw()
 
         finally:
             self._confirming = False
+            self._nav_step = -1
+            self._redraw()
             self._write('\033[?25l')
 
-    def _draw_confirmation(self):
-        """Write the two-option confirmation at the current cursor."""
-        fb = "".join(self._confirm_buf)
-        self._write('\n')
-        if self._confirm_selected == 0:
-            self._write(f' {GREEN}●{RESET} {BOLD}accept{RESET}\n')
-            self._write(f' {DIM}○ give feedback{RESET}')
-        else:
-            self._write(f' {DIM}○ accept{RESET}\n')
-            self._write(f' {GREEN}●{RESET} {fb}')
+    def _nav_up(self):
+        if self._nav_step == -1:
+            if self.step_entries:
+                self._nav_step = len(self.step_entries) - 1
+        elif self._nav_step > 0:
+            self._nav_step -= 1
 
-    def _update_confirmation(self):
-        """Efficient redraw of just the confirmation area."""
-        self._write('\033[u')  # restore to saved position
-        self._write('\033[J')  # clear from cursor to end of scroll region
-        self._draw_confirmation()
+    def _nav_down(self):
+        if self._nav_step >= 0:
+            if self._nav_step < len(self.step_entries) - 1:
+                self._nav_step += 1
+            else:
+                self._nav_step = -1
+
+    def _draw_confirmation(self):
+        fb = "".join(self._confirm_buf)
+        self._write_raw('\n')
+        if self._nav_step >= 0:
+            self._write_raw(f' {DIM}○ accept{RESET}\n')
+            self._write_raw(f' {DIM}○ give feedback{RESET}')
+        elif self._confirm_selected == 0:
+            self._write_raw(f' {GREEN}●{RESET} {BOLD}accept{RESET}\n')
+            self._write_raw(f' {DIM}○ give feedback{RESET}')
+        else:
+            self._write_raw(f' {DIM}○ accept{RESET}\n')
+            self._write_raw(f' {GREEN}●{RESET} {fb}')
 
     # ── View toggles ────────────────────────────────────────────
 
@@ -473,39 +582,55 @@ class TUI:
     # ── Redraw ──────────────────────────────────────────────────
 
     def _redraw(self):
-        # Hide cursor during redraw
-        self._write('\033[?25l')
-        # Clear scroll region
-        for row in range(4, self.rows + 1):
-            self._write(f'\033[{row};1H\033[2K')
-        self._write('\033[4;1H')
+        with self._write_lock:
+            self._write_raw('\033[?25l')
+            self._draw_header()
+            cs = self._content_start
+            for row in range(cs, self.rows + 1):
+                self._write_raw(f'\033[{row};1H\033[2K')
+            self._write_raw(f'\033[{cs};1H')
 
-        if self.view == "main":
-            for line in self.log_lines:
-                self._write(f' {line}\n')
-            if self._thinking:
-                self._write(f'  {DIM}thinking...{RESET}')
-            elif self.trace_buf:
-                if self.trace_visible:
-                    for chunk in self.trace_buf:
-                        self._write(f'{DIM}{chunk}{RESET}')
-                    # No trailing newline during streaming so cursor stays
-                    # at end of trace for seamless continuation
-                    if not self.streaming:
-                        self._write('\n')
-                elif self.streaming:
-                    self._write(f'  {DIM}thinking...{RESET}')
-            if self._confirming:
-                self._write('\033[s')  # save cursor for confirmation updates
-                self._draw_confirmation()
-                self._write('\033[?25h')  # show cursor during confirmation
-        elif self.view == "whiteboard":
-            self._write(f'  {BOLD}Whiteboard{RESET} {DIM}(press w or enter to return){RESET}\n')
-            self._write(f'  {DIM}{"─" * 40}{RESET}\n')
-            for wline in self.whiteboard.splitlines():
-                self._write(f'  {wline}\n')
-        elif self.view == "help":
-            self._write(HELP_TEXT)
+            if self.view == "main":
+                for entry in self.log_lines:
+                    is_step = entry.step_idx >= 0
+                    if is_step and self._confirming and entry.step_idx == self._nav_step:
+                        self._write_raw(f' {GREEN}▎{RESET}{entry.text}\n')
+                    else:
+                        self._write_raw(f' {entry.text}\n')
+                # Spinner or trace
+                if self._spinner_label and (self.streaming):
+                    if not self.trace_visible or not self.trace_buf:
+                        # Show spinner (trace off, or no text yet)
+                        ch = SPINNER[self._spinner_tick]
+                        self._write_raw(f'  {DIM}{ch} {self._spinner_label}{RESET}')
+                    else:
+                        # Trace on and we have text — show trace
+                        for chunk in self.trace_buf:
+                            self._write_raw(f'{DIM}{chunk}{RESET}')
+                elif self.trace_buf:
+                    if self.trace_visible:
+                        for chunk in self.trace_buf:
+                            self._write_raw(f'{DIM}{chunk}{RESET}')
+                        if not self.streaming:
+                            self._write_raw('\n')
+                if self._confirming:
+                    self._draw_confirmation()
+                    self._write_raw('\033[?25h')
+            elif self.view == "whiteboard":
+                self._write_raw(f'  {BOLD}Whiteboard{RESET} {DIM}(esc to return){RESET}\n')
+                self._write_raw(f'  {DIM}{"─" * 40}{RESET}\n')
+                for wline in self.whiteboard.splitlines():
+                    self._write_raw(f'  {wline}\n')
+            elif self.view == "help":
+                self._write_raw(HELP_TEXT)
+            elif self.view == "step_detail":
+                self._write_raw(f'  {BOLD}{self._step_detail_title}{RESET}')
+                self._write_raw(f' {DIM}(esc to return){RESET}\n')
+                self._write_raw(f'  {DIM}{"─" * 40}{RESET}\n')
+                for dline in self._step_detail_text.splitlines():
+                    self._write_raw(f'  {dline}\n')
+
+            sys.stdout.flush()
 
     # ── Helpers ─────────────────────────────────────────────────
 

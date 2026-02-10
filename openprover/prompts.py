@@ -9,7 +9,7 @@ ACTIONS = [
 SYSTEM_PROMPT = r"""
 You are a senior research mathematician. You prove theorems.
 
-Your workspace is a WHITEBOARD — terse, dense, like a real whiteboard. Update it every step.
+Your workspace is a WHITEBOARD — terse, dense, like a real whiteboard. Update it when you have meaningful changes.
 
 ## Principles
 
@@ -88,11 +88,11 @@ At the END of your response, output the following sections (these are REQUIRED):
 
 ACTION: <one of: {actions}>
 SUMMARY: <one-line summary of what you did>
-WHITEBOARD:
-<COMPLETE updated whiteboard — replaces previous. Keep terse and dense.>
-END_WHITEBOARD
 
-Optional sections (only if applicable):
+Optional sections (include only when applicable):
+WHITEBOARD:
+<COMPLETE updated whiteboard — replaces previous. Keep terse and dense. Only include if you have meaningful changes to the whiteboard.>
+END_WHITEBOARD
 PROOF:
 <If action=declare_proof: the COMPLETE, RIGOROUS proof. Not a sketch. A real proof.>
 END_PROOF
@@ -175,11 +175,11 @@ def format_step_prompt(
     parts.append(f"\n\nStep {step_num}/{max_steps}.")
     if plan:
         parts.append(
-            f" Plan: {plan['action']} — {plan['summary']}\n\nExecute this plan. Update the whiteboard with your work."
+            f" Plan: {plan['action']} — {plan['summary']}\n\nExecute this plan."
         )
     else:
         parts.append(
-            " Decide and execute the best next step. Update the whiteboard."
+            " Decide and execute the best next step."
         )
     parts.append(
         "\n\nKeep the whiteboard terse. Do NOT declare_stuck or declare_proof unless you have genuinely exhausted approaches or have a complete proof."
@@ -319,7 +319,7 @@ def parse_step_output(text: str) -> dict | None:
     if lemma_content:
         result["lemma_content"] = lemma_content
 
-    if "action" not in result or "whiteboard" not in result:
+    if "action" not in result:
         return None
     result.setdefault("summary", "")
     return result

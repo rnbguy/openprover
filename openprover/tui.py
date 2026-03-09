@@ -1815,15 +1815,18 @@ class TUI:
 
         avail = self._main_avail_rows(tab)
         total = len(lines)
-        max_off = max(total - avail, 0)
+        max_off = self._max_scroll_offset(lines, tab)
         if tab.scroll_offset > max_off:
             tab.scroll_offset = max_off
+        visible = avail - 1 if tab.scroll_offset > 0 else avail
         end = total - tab.scroll_offset
-        start = max(end - avail, 0)
+        start = max(end - visible, 0)
         target_start, target_end = sel
 
         if target_start < start:
-            new_end = min(total, target_start + avail)
+            # Scroll up so target_start is at top; account for indicator
+            visible_up = avail - 1  # indicator will be shown
+            new_end = min(total, target_start + visible_up)
             tab.scroll_offset = max(total - new_end, 0)
         elif target_end >= end:
             tab.scroll_offset = max(total - (target_end + 1), 0)
@@ -1864,12 +1867,12 @@ class TUI:
             return
 
         tab = self._active_tab
-        old_total = len(self._build_main_lines(tab))
-        old_max_off = max(old_total - self._main_avail_rows(tab), 0)
+        old_lines = self._build_main_lines(tab)
+        old_max_off = self._max_scroll_offset(old_lines, tab)
         old_ratio = (tab.scroll_offset / old_max_off) if old_max_off > 0 else 0.0
         self.trace_visible = not self.trace_visible
-        new_total = len(self._build_main_lines(tab))
-        new_max_off = max(new_total - self._main_avail_rows(tab), 0)
+        new_lines = self._build_main_lines(tab)
+        new_max_off = self._max_scroll_offset(new_lines, tab)
         if old_max_off > 0 and new_max_off > 0:
             tab.scroll_offset = int(round(old_ratio * new_max_off))
         else:
@@ -1883,6 +1886,14 @@ class TUI:
 
     # ── Scrolling ────────────────────────────────────────────────
 
+    def _max_scroll_offset(self, lines: list[str], tab: _Tab | None = None) -> int:
+        """Max scroll offset accounting for scroll indicator row."""
+        avail = self._main_avail_rows(tab)
+        if len(lines) <= avail:
+            return 0
+        # When scrolled, indicator takes 1 row, so only avail-1 content rows
+        return len(lines) - avail + 1
+
     def _scroll_up(self):
         if self.view == "step_detail":
             page = max(self._step_detail_avail_rows() - 1, 1)
@@ -1892,7 +1903,7 @@ class TUI:
         tab = self._active_tab
         page = max(self._main_avail_rows(tab) - 1, 1)
         lines = self._build_main_lines(tab)
-        max_off = max(len(lines) - self._main_avail_rows(tab), 0)
+        max_off = self._max_scroll_offset(lines, tab)
         tab.scroll_offset = min(tab.scroll_offset + page, max_off)
         self._redraw()
 
@@ -1915,7 +1926,7 @@ class TUI:
             return
         tab = self._active_tab
         lines = self._build_main_lines(tab)
-        max_off = max(len(lines) - self._main_avail_rows(tab), 0)
+        max_off = self._max_scroll_offset(lines, tab)
         tab.scroll_offset = min(tab.scroll_offset + n, max_off)
         self._redraw()
 
@@ -2042,16 +2053,14 @@ class TUI:
                 avail = self._main_avail_rows(tab)
 
                 # Clamp scroll offset
-                max_off = max(len(lines) - avail, 0)
+                max_off = self._max_scroll_offset(lines, tab)
                 if tab.scroll_offset > max_off:
                     tab.scroll_offset = max_off
 
-                # Viewport window
+                # Viewport window (indicator takes 1 row when scrolled)
+                visible = avail - 1 if tab.scroll_offset > 0 else avail
                 end = len(lines) - tab.scroll_offset
-                start = max(end - avail, 0)
-                if tab.scroll_offset >= max_off and max_off > 0:
-                    start = 0
-                    end = min(avail, len(lines))
+                start = max(end - visible, 0)
                 for line in lines[start:end]:
                     self._write_raw(f'{line}\n')
 

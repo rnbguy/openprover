@@ -727,7 +727,8 @@ class TUI:
                 if (not tab.spinner_label
                         or self._has_visible_stream_content(tab)):
                     return
-                self._write_raw(f'\r\033[2K  {DIM}{ch} {tab.spinner_label} {status}{RESET}')
+                bar = f' {GREEN}▎{RESET}' if self._spinner_selected(tab) else '  '
+                self._write_raw(f'\r\033[2K{bar}{DIM}{ch} {tab.spinner_label} {status}{RESET}')
                 sys.stdout.flush()
 
     # ── Streaming ───────────────────────────────────────────────
@@ -967,6 +968,16 @@ class TUI:
     @staticmethod
     def _tab_shows_spinner(tab: _Tab) -> bool:
         return tab.streaming and bool(tab.spinner_label)
+
+    def _spinner_selected(self, tab: _Tab) -> bool:
+        """Return True when the spinner line belongs to the currently selected entry."""
+        if tab.id == "planner":
+            return (self._nav_step >= 0
+                    and self.step_entries
+                    and self._nav_step == len(self.step_entries) - 1)
+        return (tab.nav_idx >= 0
+                and tab.entries
+                and tab.nav_idx == len(tab.entries) - 1)
 
     def _advance_tab_spinners(self):
         now = time.monotonic()
@@ -2131,7 +2142,8 @@ class TUI:
                     ch = SPINNER[tab.spinner_tick]
                     elapsed = int(time.monotonic() - tab.spinner_start)
                     status = self._spinner_status(elapsed, tab.spinner_tokens)
-                    self._write_raw(f'  {DIM}{ch} {tab.spinner_label} {status}{RESET}')
+                    bar = f' {GREEN}▎{RESET}' if self._spinner_selected(tab) else '  '
+                    self._write_raw(f'{bar}{DIM}{ch} {tab.spinner_label} {status}{RESET}')
 
                 # Scroll indicator
                 above = start

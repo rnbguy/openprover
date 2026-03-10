@@ -203,6 +203,7 @@ class Prover:
         self.parallelism = parallelism
         self.shutting_down = False
         self.step_num = 0
+        self._step_idx = 0
         self.prev_outputs: list[str] = []  # rolling window of last 3 outputs
         self.proof_text = ""
         self.resumed = resumed
@@ -524,15 +525,17 @@ class Prover:
         summary = plan.get("summary", "")
         logger.info("Action: %s — %s", action, summary)
 
-        # Log non-interactive steps immediately. For actions that require
-        # confirmation, record history only after the user accepts the proposal.
-        if action not in ("spawn", "literature_search"):
-            self.tui.step_complete(
-                self.step_num, self.max_steps, action, summary,
-            )
-
         # Save planner output
         self._save_step(step_dir, plan)
+
+        # Interactive confirmation for all actions when not autonomous
+        result = self._confirm_action(plan, step_dir, resp)
+        if result is not None:
+            return result
+
+        self._step_idx = self.tui.step_complete(
+            self.step_num, self.max_steps, action, summary,
+        )
 
         # Dispatch
         if action == "submit_proof":
@@ -564,6 +567,60 @@ class Prover:
         return "continue"
 
     # ── Action handlers ──────────────────────────────────────
+
+    def _confirm_action(self, plan: dict, step_dir: Path,
+                        planner_resp: dict | None = None) -> str | None:
+        """Show proposal and get user confirmation when not in autonomous mode.
+
+        Returns None if the action is approved (proceed with execution),
+        or a loop control string ('continue', 'stop', 'pause') if rejected/quit.
+        """
+        self.autonomous = self.tui.autonomous
+        if self.autonomous:
+            return None
+
+        self.tui.show_proposal(plan)
+        while True:
+            user_resp = self.tui.get_confirmation()
+            if user_resp == "":
+                return None  # accept
+            if user_resp == "q":
+                self.shutting_down = True
+                return "stop"
+            if user_resp == "p":
+                return "pause"
+            if user_resp == "a":
+                self.autonomous = True
+                self.tui.log("  autonomous mode", dim=True)
+                return None
+            # Feedback — set as prev_output and retry next step
+            text = user_resp.strip()
+            action = plan.get("action", "")
+            summary = plan.get("summary", "")
+            detail = (
+                f"Proposed step:\n"
+                f"{action} — {summary}".strip(" —")
+            )
+            self.tui.step_complete(
+                self.step_num,
+                self.max_steps,
+                action,
+                summary,
+                detail=detail,
+                rejected=True,
+                feedback=text,
+            )
+            self._save_step_meta(
+                step_dir,
+                status="rejected",
+                action=action,
+                resp=planner_resp,
+                error="Rejected by user feedback",
+                feedback=text,
+            )
+            self._push_output(f"Human feedback: {user_resp}")
+            self.tui.show_replan_notice("Feedback noted — will replan next step")
+            return "continue"
 
     def _handle_interrupt(self, step_dir: Path) -> str:
         """Handle CTRL+C during planner/worker call.
@@ -879,57 +936,6 @@ class Prover:
         # Limit to parallelism
         tasks = tasks[:self.parallelism]
 
-        # Interactive confirmation (re-sync in case user toggled during streaming)
-        self.autonomous = self.tui.autonomous
-        if not self.autonomous:
-            self.tui.show_proposal(plan)
-            while True:
-                user_resp = self.tui.get_confirmation()
-                if user_resp == "":
-                    break  # accept
-                if user_resp == "q":
-                    self.shutting_down = True
-                    return "stop"
-                if user_resp == "p":
-                    return "pause"
-                if user_resp == "a":
-                    self.autonomous = True
-                    self.tui.log("  autonomous mode", dim=True)
-                    break
-                # Feedback — set as prev_output and retry next step
-                text = user_resp.strip()
-                detail = (
-                    f"Proposed step:\n"
-                    f"{plan.get('action', '')} — {plan.get('summary', '')}".strip(" —")
-                )
-                self.tui.step_complete(
-                    self.step_num,
-                    self.max_steps,
-                    plan.get("action", ""),
-                    plan.get("summary", ""),
-                    detail=detail,
-                    rejected=True,
-                    feedback=text,
-                )
-                self._save_step_meta(
-                    step_dir,
-                    status="rejected",
-                    action=plan.get("action", ""),
-                    resp=planner_resp,
-                    error="Rejected by user feedback",
-                    feedback=text,
-                )
-                self._push_output(f"Human feedback: {user_resp}")
-                self.tui.show_replan_notice("Feedback noted — will replan next step")
-                return "continue"
-
-        step_idx = self.tui.step_complete(
-            self.step_num,
-            self.max_steps,
-            plan.get("action", ""),
-            plan.get("summary", ""),
-        )
-
         logger.info("Spawning %d worker(s)", len(tasks))
 
         # Create worker tabs
@@ -994,7 +1000,7 @@ class Prover:
             self.planner_llm.clear_interrupt()
             self.worker_llm.clear_interrupt()
             self.tui.update_step_status(
-                step_idx,
+                self._step_idx,
                 interrupted=True,
                 detail_append="Execution interrupted before all workers completed.",
             )
@@ -1049,57 +1055,6 @@ class Prover:
                                  resp=planner_resp, error="No query specified")
             return "continue"
 
-        # Interactive confirmation (re-sync in case user toggled during streaming)
-        self.autonomous = self.tui.autonomous
-        if not self.autonomous:
-            self.tui.show_proposal(plan)
-            while True:
-                user_resp = self.tui.get_confirmation()
-                if user_resp == "":
-                    break  # accept
-                if user_resp == "q":
-                    self.shutting_down = True
-                    return "stop"
-                if user_resp == "p":
-                    return "pause"
-                if user_resp == "a":
-                    self.autonomous = True
-                    self.tui.log("  autonomous mode", dim=True)
-                    break
-                # Feedback — set as prev_output and retry next step
-                text = user_resp.strip()
-                detail = (
-                    f"Proposed step:\n"
-                    f"{plan.get('action', '')} — {plan.get('summary', '')}".strip(" —")
-                )
-                self.tui.step_complete(
-                    self.step_num,
-                    self.max_steps,
-                    plan.get("action", ""),
-                    plan.get("summary", ""),
-                    detail=detail,
-                    rejected=True,
-                    feedback=text,
-                )
-                self._save_step_meta(
-                    step_dir,
-                    status="rejected",
-                    action=plan.get("action", ""),
-                    resp=planner_resp,
-                    error="Rejected by user feedback",
-                    feedback=text,
-                )
-                self._push_output(f"Human feedback: {user_resp}")
-                self.tui.show_replan_notice("Feedback noted — will replan next step")
-                return "continue"
-
-        step_idx = self.tui.step_complete(
-            self.step_num,
-            self.max_steps,
-            plan.get("action", ""),
-            plan.get("summary", ""),
-        )
-
         logger.info("Literature search: %s", query)
         wid = f"search_{self.step_num}"
         task_desc = f"Query: {query}\n\nContext: {context}"
@@ -1136,7 +1091,7 @@ class Prover:
             self.tui.stream_end(tab=wid)
             self.worker_llm.clear_interrupt()
             self.tui.update_step_status(
-                step_idx,
+                self._step_idx,
                 interrupted=True,
                 detail_append="Execution interrupted before literature search completed.",
             )

@@ -941,6 +941,9 @@ class Prover:
             self.tui.add_worker_tab(wid, label, task_description=desc)
             worker_ids.append(wid)
 
+        # Snapshot tabs early so step detail can show running status
+        self.tui.snapshot_worker_tabs(self.step_num)
+
         # Run workers
         workers_dir = step_dir / "workers"
         workers_dir.mkdir(exist_ok=True)

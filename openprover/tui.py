@@ -1112,7 +1112,14 @@ class TUI:
         if entry.get("interrupted"):
             status_lines.append(f"{YELLOW}● execution interrupted{RESET}")
         if not status_lines:
-            status_lines.append(f"{GREEN}● completed{RESET}")
+            # For spawn actions, check if workers are still running.
+            worker_tabs = entry.get("worker_tabs") or []
+            if action == "spawn" and worker_tabs and not all(
+                getattr(t, "done", True) for t in worker_tabs
+            ):
+                status_lines.append(f"{CYAN}● workers running{RESET}")
+            else:
+                status_lines.append(f"{GREEN}● completed{RESET}")
         add_section("Status", status_lines, color=YELLOW)
 
         detail = (entry.get("detail") or "").strip()

@@ -340,7 +340,7 @@ class TUI:
                 name = name[:17] + "..."
             if tab.done:
                 name += " ✓"
-            elif self._tab_shows_spinner(tab):
+            elif self._tab_shows_spinner(tab) and not tab.is_waiting:
                 name += f" {SPINNER[tab.spinner_tick]}"
             bracket = f"[{name}]"
             visible_len += len(bracket) + 1

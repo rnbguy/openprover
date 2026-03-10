@@ -69,17 +69,22 @@ def _split_think_tags(text: str) -> tuple[str, str]:
 class LLMClient:
     """Calls Claude via the CLI and archives all interactions."""
 
-    def __init__(self, model: str, archive_dir: Path):
+    def __init__(self, model: str, archive_dir: Path,
+                 max_output_tokens: int = 128_000):
         self.model = model
         self.archive_dir = archive_dir
         self.call_count = 0
         self.total_cost = 0.0
+        self.max_output_tokens = max_output_tokens
         self.mcp_config: dict | None = None  # set by Prover for MCP tool-calling
         self._interrupted = threading.Event()
         self._active_procs: list[subprocess.Popen] = []
         self._procs_lock = threading.Lock()
-        # Raise Claude CLI's default 32k output token cap
-        self._env = {**os.environ, "CLAUDE_CODE_MAX_OUTPUT_TOKENS": "128000"}
+        # Override Claude CLI's default 32k output token cap
+        self._env = {
+            **os.environ,
+            "CLAUDE_CODE_MAX_OUTPUT_TOKENS": str(max_output_tokens),
+        }
 
     def interrupt(self):
         """Signal all active LLM calls to stop."""
@@ -110,7 +115,7 @@ class LLMClient:
         stream_callback=None,
         archive_path: Path | None = None,
         tool_callback=None,
-        max_tokens: int | None = None,  # accepted for API compat, not used by Claude CLI
+        max_tokens: int | None = None,  # ignored — CLI uses max_output_tokens from __init__
     ) -> dict:
         """Make an LLM call and archive it.
 
@@ -466,12 +471,14 @@ class HFClient:
         self.vllm = vllm
         self._interrupted = threading.Event()
         self.max_context_length = MODEL_CONTEXT_LENGTHS[model]
-        self.max_output_tokens = self.max_context_length
         self.answer_reserve = answer_reserve
-        # For vLLM/OpenAI-compatible servers, keep default completion budget
-        # conservative; requesting the full context as max_tokens often causes
-        # HTTP 400 when prompt tokens are nonzero.
-        self.vllm_default_max_tokens = answer_reserve
+        # Default completion budget differs by backend:
+        # - serve_hf: full context (server subtracts prompt tokens internally)
+        # - vLLM: conservative (max_tokens ≈ context causes HTTP 400)
+        if vllm:
+            self.max_output_tokens = answer_reserve
+        else:
+            self.max_output_tokens = self.max_context_length
         self.max_thinking_tokens = max(
             self.max_context_length - answer_reserve,
             self.max_context_length // 2,
@@ -481,6 +488,10 @@ class HFClient:
     def interrupt(self):
         """Signal the current LLM call to stop."""
         self._interrupted.set()
+
+    def cleanup(self):
+        """No-op — HTTP clients have no subprocesses to kill."""
+        pass
 
     def clear_interrupt(self):
         """Reset the interrupt flag so new calls can proceed."""
@@ -529,10 +540,7 @@ class HFClient:
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": prompt},
         ]
-        effective_max_tokens = max_tokens if max_tokens is not None else (
-            self.vllm_default_max_tokens if self.vllm
-            else self.max_output_tokens
-        )
+        effective_max_tokens = max_tokens if max_tokens is not None else self.max_output_tokens
         if self.vllm:
             payload = {
                 "model": self.model,
@@ -803,9 +811,7 @@ class HFClient:
         self.call_count += 1
         call_num = self.call_count
 
-        effective_max_tokens = max_tokens if max_tokens is not None else (
-            self.vllm_default_max_tokens
-        )
+        effective_max_tokens = max_tokens if max_tokens is not None else self.max_output_tokens
 
         payload = {
             "model": self.model,

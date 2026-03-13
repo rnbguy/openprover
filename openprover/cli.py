@@ -253,6 +253,16 @@ def _cmd_prove():
 
     args = parser.parse_args()
 
+    # Positional arg: file → --theorem, directory → --run-dir
+    if args.run_dir and not args.theorem:
+        p = Path(args.run_dir)
+        if p.is_file():
+            args.theorem = args.run_dir
+            args.run_dir = None
+        elif not p.exists():
+            # Non-existent path: create as new run directory
+            p.mkdir(parents=True, exist_ok=True)
+
     if not args.run_dir and not args.theorem:
         parser.error("provide a run directory or --theorem to start a new run")
 

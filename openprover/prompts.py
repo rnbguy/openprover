@@ -95,9 +95,9 @@ def _build_principles(*, lean_mode: str, has_lean: bool,
         principles += "- Use literature_search sparingly (2-3 times max). Store results in the repo immediately.\n"
     if lean_items:
         principles += (
-            "- Use write_items with format=\"lean\" to develop and test Lean code snippets. "
-            "They are saved as .lean files in the repo and auto-verified by `lake env lean`. "
-            "Items that fail verification are NOT saved.\n"
+            "- Use write_items with format=\"lean\" to develop and test Lean code. "
+            "Lean items must be **complete, standalone .lean files** (including `import Mathlib` and all necessary imports). "
+            "They are auto-verified by `lake env lean`. Items that fail verification are NOT saved.\n"
         )
     principles += (
         "- Write proofs as repo items first (via write_items). This lets you refine, verify, and iterate "
@@ -109,17 +109,22 @@ def _build_principles(*, lean_mode: str, has_lean: bool,
             "The session ends only when both are submitted (submit_proof for informal, submit_lean_proof for formal).\n"
             "- After you have a proof in English, use read_theorem to see the formal theorem statement in Lean.\n"
             "- Before submitting, run at least one independent verification worker that checks the full informal proof end-to-end.\n"
-            "- **Lean workflow**: First develop the complete Lean proof file as a repo item using write_items with format=\"lean\" "
-            "(this auto-verifies it). Once the Lean file is valid in the repo, submit the proof blocks via submit_lean_proof — "
-            "this triggers a separate independent verification.\n"
+            "- **Lean workflow**: (1) Develop the complete Lean proof as a lean repo item via write_items with format=\"lean\" — "
+            "this must be a standalone .lean file with imports, and is auto-verified on write. "
+            "(2) Once the Lean file compiles, write a **separate markdown repo item** containing just the sorry-replacement blocks "
+            "in `--- BLOCK ---` / `--- CONTEXT ---` format (no imports — these get spliced into THEOREM.lean). "
+            "(3) Call submit_lean_proof with that blocks item's slug — this assembles and independently re-verifies.\n"
         )
     elif lean_mode == "formalize_only":
         principles += (
             "- An informal proof (PROOF.md) is already provided. Your only goal is to produce PROOF.lean.\n"
             "- Use read_theorem to view the informal proof and Lean theorem statement.\n"
-            "- **Lean workflow**: First develop the complete Lean proof file as a repo item using write_items with format=\"lean\" "
-            "(this auto-verifies it). Once the Lean file is valid in the repo, submit the proof blocks via submit_lean_proof — "
-            "this triggers a separate independent verification. The session ends when verification succeeds.\n"
+            "- **Lean workflow**: (1) Develop the complete Lean proof as a lean repo item via write_items with format=\"lean\" — "
+            "this must be a standalone .lean file with imports, and is auto-verified on write. "
+            "(2) Once the Lean file compiles, write a **separate markdown repo item** containing just the sorry-replacement blocks "
+            "in `--- BLOCK ---` / `--- CONTEXT ---` format (no imports — these get spliced into THEOREM.lean). "
+            "(3) Call submit_lean_proof with that blocks item's slug — this assembles and independently re-verifies. "
+            "The session ends when verification succeeds.\n"
         )
     elif lean_mode == "prove":
         principles += (
@@ -169,14 +174,15 @@ def _build_toml_fields(*, lean_mode: str, has_lean: bool,
     if lean_items:
         fields += (
             f"\n**write_items** (lean format — auto-verified): add `format = \"lean\"` to the item. "
-            f"Include natural language descriptions of all theorems, definitions, and proofs as `--` comments. "
-            f"The first comment line is the summary.\n"
+            f"Content must be a **complete, standalone Lean file** (with `import Mathlib` and all needed imports). "
+            f"Include natural language descriptions as `--` comments. The first comment line is the summary.\n"
             f"{_TOML_OPEN_TAG}\n"
             "[[items]]\n"
             'slug = "helper-lemma"\n'
             'format = "lean"\n'
             f"content = {_TQ}\n"
             "-- Summary: n * 0 = 0 for all natural numbers.\n"
+            "import Mathlib\n"
             "\n"
             "-- Multiplying any natural number by zero yields zero.\n"
             "-- Proof: by induction on n, using the definition of Nat.mul.\n"
@@ -190,13 +196,15 @@ def _build_toml_fields(*, lean_mode: str, has_lean: bool,
         )
     if has_lean:
         fields += (
-            f"\nThe formal Lean proof item must contain {num_sorries} replacement block(s) "
+            f"\n**submit_lean_proof format** (different from lean repo items!): "
+            f"The item referenced by `lean_proof_slug` must be a **markdown** repo item (not format=\"lean\") "
+            f"containing {num_sorries} replacement block(s) "
             f"(one per `sorry` in THEOREM.lean), separated by `--- BLOCK ---` delimiters if more than one. "
-            f"Optional context (helper definitions) goes before the first block, separated by `--- CONTEXT ---`. "
-            f"No `import` statements allowed. Example:\n"
+            f"Optional context (helper definitions, no imports) goes before the first block, separated by `--- CONTEXT ---`. "
+            f"No `import` statements — the blocks are spliced into THEOREM.lean which already has imports. Example:\n"
             f"```\n"
             f"--- CONTEXT ---\n"
-            f"helper definitions here\n"
+            f"helper definitions here (no imports)\n"
             f"--- BLOCK ---\n"
             f"replacement for sorry #0\n"
         )
@@ -246,12 +254,14 @@ def _build_submit_proof_section(*, lean_mode: str, has_lean: bool) -> str:
         section += (
             "## submit_lean_proof\n"
             "\n"
-            "submit_lean_proof references a repo item slug containing the Lean proof blocks. "
-            "Write the proof as a repo item first (use write_items with format=\"lean\" to develop "
-            "and validate the complete Lean file), then submit the blocks via submit_lean_proof. "
-            "Provide `lean_proof_slug` pointing to a repo item with the proof blocks "
-            "(using `--- BLOCK ---` / `--- CONTEXT ---` delimiters). "
-            "The blocks are assembled with the theorem template and independently verified.\n"
+            "submit_lean_proof takes `lean_proof_slug` pointing to a **markdown** repo item containing "
+            "the sorry-replacement blocks in `--- BLOCK ---` / `--- CONTEXT ---` format. "
+            "**This is NOT a complete Lean file** — it contains only the proof bodies that get spliced into THEOREM.lean. "
+            "No `import` statements.\n"
+            "\n"
+            "**Workflow**: First develop the complete Lean proof as a lean repo item (write_items format=\"lean\", "
+            "which is a standalone .lean file with imports — auto-verified on write). "
+            "Once it compiles, create a separate markdown item with just the blocks, then submit_lean_proof.\n"
         )
     elif has_lean:
         section += (
@@ -265,10 +275,14 @@ def _build_submit_proof_section(*, lean_mode: str, has_lean: bool) -> str:
             "\n"
             "## submit_lean_proof\n"
             "\n"
-            "submit_lean_proof references a repo item slug containing the Lean proof blocks. "
-            "**Workflow**: First develop the complete Lean file as a repo item using write_items with format=\"lean\" "
-            "(auto-verified on write). Once valid, submit the proof blocks via submit_lean_proof with `lean_proof_slug`. "
-            "The blocks are assembled with the theorem template and independently verified. "
+            "submit_lean_proof takes `lean_proof_slug` pointing to a **markdown** repo item containing "
+            "the sorry-replacement blocks in `--- BLOCK ---` / `--- CONTEXT ---` format. "
+            "**This is NOT a complete Lean file** — it contains only the proof bodies that get spliced into THEOREM.lean. "
+            "No `import` statements.\n"
+            "\n"
+            "**Workflow**: First develop the complete Lean proof as a lean repo item (write_items format=\"lean\", "
+            "which is a standalone .lean file with imports — auto-verified on write). "
+            "Once it compiles, create a separate markdown item with just the blocks, then submit_lean_proof. "
             "The session ends when both informal and formal proofs are accepted.\n"
         )
     else:

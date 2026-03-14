@@ -30,13 +30,13 @@ WORKER_TOOLS = [
         "type": "function",
         "function": {
             "name": "lean_search",
-            "description": "Search Mathlib and Lean 4 declarations by natural language query.",
+            "description": "Search Lean 4 declarations by name or natural language description. Supports two query styles: by declaration name (e.g. 'List.map', 'Nat.Prime') or by meaning (e.g. 'continuous function on a compact set'). Uses hybrid retrieval (lexical + semantic) so both styles work automatically.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "query": {
                         "type": "string",
-                        "description": "Natural language search query.",
+                        "description": "A Lean declaration name (e.g. 'List.filter', 'Nat.Prime') or an informal natural language description (e.g. 'prime number divisibility', 'sum of geometric series').",
                     },
                 },
                 "required": ["query"],

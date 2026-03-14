@@ -88,7 +88,7 @@ def lean_verify(code: str) -> str:
 
 @mcp.tool()
 async def lean_search(query: str) -> str:
-    """Search Mathlib and Lean 4 declarations by natural language query."""
+    """Search Lean 4 declarations by name or natural language description. Query with a declaration name (e.g. 'List.map', 'Nat.Prime') or an informal description (e.g. 'continuous function on a compact set'). Uses hybrid retrieval (lexical + semantic)."""
     if not query.strip():
         raise ValueError("no query provided")
     service = _get_search_service()

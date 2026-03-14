@@ -19,32 +19,27 @@ class RenderMixin:
 
         # Row 1
         model = getattr(self, 'model_name', '') or ''
-        self._write_raw('\033[1;1H\033[2K')
-        self._write_raw(f'{BLUE}╭─{RESET} {BOLD}OpenProver{RESET} {DIM}v{__version__}{RESET}')
+        row1 = f'{BLUE}╭─{RESET} {BOLD}OpenProver{RESET} {DIM}v{__version__}{RESET}'
         if step:
-            self._write_raw(f' {BLUE}──{RESET} {DIM}{step}{RESET}')
+            row1 += f' {BLUE}──{RESET} {DIM}{step}{RESET}'
         if model:
-            self._write_raw(f' {BLUE}·{RESET} {YELLOW}{model}{RESET}')
-        r1_text = f"─ OpenProver v{__version__}"
-        if step:
-            r1_text += f" ── {step}"
-        if model:
-            r1_text += f" · {model}"
-        r1_text += " "
-        fill1 = max(w - len(r1_text) - 2, 0)
-        self._write_raw(f' {BLUE}{"─" * fill1}╮{RESET}')
+            row1 += f' {BLUE}·{RESET} {YELLOW}{model}{RESET}'
+        fill1 = max(w - self._visible_len(row1) - 2, 0)
+        row1 += f' {BLUE}{"─" * fill1}╮{RESET}'
+        self._write_raw(f'\033[1;1H{self._pad_to_width(row1, w)}')
 
         # Row 2 — theorem
         name = (self.theorem_name or "").replace("\n", " ").replace("\r", "")
-        max_name = max(w - 4, 10)
-        if len(name) > max_name:
-            display_name = name[:max_name - 3] + "..."
-        else:
-            display_name = name
-        name_pad = max(w - 3 - len(display_name), 0)
-        self._write_raw('\033[2;1H\033[2K')
-        self._write_raw(f'{BLUE}│{RESET} {WHITE}{display_name}{RESET}')
-        self._write_raw(f'{" " * name_pad}{BLUE}│{RESET}')
+        # Build inner content (between │ borders), then pad to exact width
+        inner = f' {WHITE}{name}{RESET}'
+        inner_w = w - 2  # space for left and right │
+        if self._visible_len(inner) > inner_w:
+            # Truncate: rebuild with shortened name
+            max_name = inner_w - 4  # " " prefix + "..."
+            display_name = name[:max(max_name, 1)] + "..."
+            inner = f' {WHITE}{display_name}{RESET}'
+        row2 = f'{BLUE}│{RESET}{self._pad_to_width(inner, inner_w)}{BLUE}│{RESET}'
+        self._write_raw(f'\033[2;1H{self._pad_to_width(row2, w)}')
 
         # Row 3 — hints
         help_style = BOLD if self.view == "help" else DIM
@@ -56,7 +51,6 @@ class RenderMixin:
                             f'{trace_style}r reasoning{RESET} {DIM}·{RESET} '
                             f'{input_style}i input{RESET} {DIM}·{RESET} '
                             f'{auto_style}a autonomous{RESET}')
-            hints_len = len("? help · r reasoning · i input · a autonomous")
         else:
             if self.view == "whiteboard":
                 wb_label = f'{BOLD}w whiteboard{RESET}'
@@ -68,45 +62,41 @@ class RenderMixin:
                             f'{trace_style}r reasoning{RESET} {DIM}·{RESET} '
                             f'{wb_label} {DIM}·{RESET} '
                             f'{auto_style}a autonomous{RESET}')
-            hints_len = len("? help · r reasoning · w whiteboard · a autonomous")
-        pad = max(w - 2 - hints_len - 1, 0)
-        self._write_raw('\033[3;1H\033[2K')
-        self._write_raw(f'{BLUE}│{RESET}{" " * pad}{hints_styled} {BLUE}│{RESET}')
+        hints_inner = f'{hints_styled} '
+        hints_pad = max(inner_w - self._visible_len(hints_inner), 0)
+        row3 = f'{BLUE}│{RESET}{" " * hints_pad}{hints_inner}{BLUE}│{RESET}'
+        self._write_raw(f'\033[3;1H{self._pad_to_width(row3, w)}')
 
         # Row 4 — bottom border + run dir + tab bar
-        self._write_raw('\033[4;1H\033[2K')
         run_dir = getattr(self, 'work_dir', '') or ''
         tab_parts = []
-        visible_len = 0
         for i, tab in enumerate(self.tabs):
             name = tab.label
             if len(name) > 20:
                 name = name[:17] + "..."
             if tab.done:
-                name += " ✓"
+                name += " \u2713"
             elif self._tab_shows_spinner(tab) and not tab.is_waiting:
                 name += f" {SPINNER[tab.spinner_tick]}"
             bracket = f"[{name}]"
-            visible_len += len(bracket) + 1
             if i == self.active_tab_idx:
                 tab_parts.append(f'{BOLD}{WHITE}{bracket}{RESET}')
             else:
                 tab_parts.append(f'{DIM}{bracket}{RESET}')
         tab_str = " ".join(tab_parts)
+        row4 = f'{BLUE}╰{RESET} {tab_str}'
         if run_dir:
-            # Show tabs on the left, run dir on the right
             dir_text = run_dir
-            max_dir = w - visible_len - 6  # leave room for borders + tabs
-            if len(dir_text) > max_dir:
-                dir_text = "…" + dir_text[-(max_dir - 1):]
-            fill = max(w - 2 - len(dir_text) - 1 - visible_len, 0)
-            self._write_raw(
-                f'{BLUE}╰{RESET} {tab_str}'
-                f'{BLUE}{"─" * fill}{RESET}'
-                f' {DIM}{dir_text}{RESET}{BLUE}╯{RESET}')
+            remaining = w - self._visible_len(row4) - 2 - 1  # fill + space + dir + ╯
+            max_dir = remaining - 1
+            if max_dir > 0 and len(dir_text) > max_dir:
+                dir_text = "\u2026" + dir_text[-(max_dir - 1):]
+            fill = max(w - self._visible_len(row4) - 1 - len(dir_text) - 1, 0)
+            row4 += f'{BLUE}{"─" * fill}{RESET} {DIM}{dir_text}{RESET}{BLUE}╯{RESET}'
         else:
-            fill = max(w - 2 - visible_len, 0)
-            self._write_raw(f'{BLUE}╰{RESET} {tab_str}{BLUE}{"─" * fill}╯{RESET}')
+            fill = max(w - self._visible_len(row4) - 1, 0)
+            row4 += f'{BLUE}{"─" * fill}╯{RESET}'
+        self._write_raw(f'\033[4;1H{self._pad_to_width(row4, w)}')
 
     def _draw_confirmation(self):
         fb = "".join(self._confirm_buf)
@@ -356,6 +346,8 @@ class RenderMixin:
 
     def _redraw(self):
         with self._write_lock:
+            # Buffer the entire frame and write it in one shot to avoid flicker
+            self._buf = []
             self._write_raw('\033[?25l')
             self._draw_header()
             cs = self._content_start
@@ -363,6 +355,9 @@ class RenderMixin:
             # Split view: skip bulk clear, use per-row cursor-addressed writes
             if self.view == "whiteboard_split":
                 self._redraw_split(cs)
+                frame = "".join(self._buf)
+                self._buf = None
+                sys.stdout.write(frame)
                 sys.stdout.flush()
                 return
 
@@ -476,4 +471,7 @@ class RenderMixin:
                     indicator = f' {DIM}↑ {above} above · ↓ {below} below{RESET}'
                     self._write_raw(f'\033[{self.rows};1H\033[2K{indicator}')
 
+            frame = "".join(self._buf)
+            self._buf = None
+            sys.stdout.write(frame)
             sys.stdout.flush()

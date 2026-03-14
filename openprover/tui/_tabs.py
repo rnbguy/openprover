@@ -88,6 +88,23 @@ class TabsMixin:
     def start_worker_action(self, tab_id: str, tool: str, args: dict):
         """Show a tool call that is about to start executing, with a spinner."""
         tab = self._find_tab(tab_id)
+
+        # Bake any accumulated streaming content into log_lines so the action
+        # entry appears AFTER the text that preceded it (correct ordering).
+        if tab.streaming and (tab.trace_buf or tab.output_buf):
+            if tab.trace_buf:
+                tab.log_lines.append(
+                    _LogEntry("".join(tab.trace_buf), is_trace=True))
+                tab.trace_buf = []
+            if tab.output_buf:
+                tab.log_lines.append(
+                    _LogEntry("".join(tab.output_buf), is_output=True))
+                tab.output_buf = []
+            tab.output_non_toml_seen = False
+            tab.output_toml_seen = False
+            if len(tab.log_lines) > 500:
+                tab.log_lines = tab.log_lines[-500:]
+
         entry = {
             "type": "action",
             "tool": tool,
@@ -99,33 +116,21 @@ class TabsMixin:
         idx = len(tab.entries)
         tab.entries.append(entry)
         line = self._format_action_line(entry)
-        self._tab_log(tab, line, step_idx=idx)
+        tab.log_lines.append(_LogEntry(line, step_idx=idx))
         tab.pending_action_log_idx = len(tab.log_lines) - 1
-        # Enable spinner for tool execution.
-        # If streaming is already active (MCP path), just update the label;
-        # otherwise (vLLM path), set up a fresh spinner.
+
+        # Set up spinner for tool execution duration.
         tab.prev_spinner_label = tab.spinner_label
         tab.spinner_label = f"{tool}\u2026"
+        tab.spinner_start = time.monotonic()
+        tab.spinner_time = 0.0
         tab.spinner_tick = 0
-        if not tab.streaming:
-            tab.spinner_start = time.monotonic()
-            tab.spinner_time = 0.0
-            tab.spinner_tokens = 0
-            tab.streaming = True
-            tab.is_waiting = False
-            tab.trace_buf = []
-            tab.output_buf = []
-            tab.output_non_toml_seen = False
-            tab.output_toml_seen = False
+        tab.spinner_tokens = 0
+        tab.streaming = True
+        tab.is_waiting = False
         self._redraw_header()
         if tab is self._active_tab and self._main_visible:
-            if self.view == "whiteboard_split":
-                self._redraw()
-            elif not self._has_visible_stream_content(tab):
-                ch = SPINNER[0]
-                with self._write_lock:
-                    self._write_raw(f'  {DIM}{ch} {tool}\u2026 {self._spinner_status(0, 0)}{RESET}')
-                    sys.stdout.flush()
+            self._redraw()
 
     def add_worker_action(self, tab_id: str, tool: str, args: dict,
                           result: str, status: str, duration_ms: int = 0):
@@ -213,9 +218,13 @@ class TabsMixin:
 
     def _redraw_header(self):
         with self._write_lock:
+            self._buf = []
             self._write_raw('\033[s')
             self._draw_header()
             self._write_raw('\033[u')
+            frame = "".join(self._buf)
+            self._buf = None
+            sys.stdout.write(frame)
             sys.stdout.flush()
 
     def _load_historical_workers(self):

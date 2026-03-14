@@ -62,6 +62,8 @@ class TUI(TextMixin, StreamMixin, NavMixin, TabsMixin, StepsMixin,
         # Thread safety for stdout
         self._write_lock = threading.Lock()
         self._key_process_lock = threading.Lock()
+        # Frame buffer: when not None, _write_raw appends here instead of stdout
+        self._buf: list[str] | None = None
         # Tabs
         self.tabs: list[_Tab] = [_Tab("planner", "Planner"), _Tab("logs", "Logs")]
         self.active_tab_idx = 0
@@ -170,7 +172,10 @@ class TUI(TextMixin, StreamMixin, NavMixin, TabsMixin, StepsMixin,
 
     def _write_raw(self, data: str):
         """Write without lock — caller must hold _write_lock."""
-        sys.stdout.write(data)
+        if self._buf is not None:
+            self._buf.append(data)
+        else:
+            sys.stdout.write(data)
 
     # ── Step counter ────────────────────────────────────────────
 
@@ -178,9 +183,13 @@ class TUI(TextMixin, StreamMixin, NavMixin, TabsMixin, StepsMixin,
         self.step_num = step_num
         self.max_steps = max_steps
         with self._write_lock:
+            self._buf = []
             self._write_raw('\033[s')
             self._draw_header()
             self._write_raw('\033[u')
+            frame = "".join(self._buf)
+            self._buf = None
+            sys.stdout.write(frame)
             sys.stdout.flush()
 
     # ── Logging ─────────────────────────────────────────────────

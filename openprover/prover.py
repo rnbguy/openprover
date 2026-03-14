@@ -477,6 +477,20 @@ class Prover:
 
             # Parse TOML decision
             plan = prompts.parse_planner_toml(resp["result"])
+
+            if isinstance(plan, prompts.ParseError):
+                parse_error = plan.message
+                remaining = MAX_PARSE_RETRIES - attempt
+                self.tui.log(
+                    f"Invalid action: {parse_error} — "
+                    f"{'retrying' if remaining else 'giving up'}...",
+                    color="red",
+                )
+                logger.info("Validation error (attempt %d/%d): %s",
+                            attempt + 1, MAX_PARSE_RETRIES + 1, parse_error)
+                plan = None
+                continue
+
             if plan is None:
                 # Check if truncated — try Phase 2 forced output
                 finish = resp.get("finish_reason", "")
@@ -507,7 +521,10 @@ class Prover:
                     self.tui.stream_end(tab="planner")
                     last_resp = resp
                     plan = prompts.parse_planner_toml(resp["result"])
-                    if plan is not None:
+                    if isinstance(plan, prompts.ParseError):
+                        parse_error = plan.message
+                        plan = None
+                    elif plan is not None:
                         break
 
                 parse_error = (
@@ -531,7 +548,7 @@ class Prover:
                                  error=parse_error)
             return "continue"
 
-        action = plan.get("action", "")
+        action = plan["action"]
         summary = plan.get("summary", "")
         logger.info("Action: %s — %s", action, summary)
 
@@ -579,6 +596,7 @@ class Prover:
             self._save_step_meta(step_dir, status="ok", action=action, resp=resp)
             return self._handle_write_whiteboard(plan)
 
+        # Should not reach here since parse_planner_toml validates action
         self.tui.log(f"Unknown action: {action}", color="red")
         self._save_step_meta(step_dir, status="unknown_action", action=action,
                              resp=resp, error=f"Unknown action: {action}")

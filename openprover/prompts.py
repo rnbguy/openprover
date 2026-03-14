@@ -274,6 +274,7 @@ def planner_system_prompt(*, isolation: bool = False, allow_give_up: bool = True
                           lean_items: bool = False) -> str:
     """Build the planner system prompt, conditionally omitting actions."""
     has_lean = lean_mode in ("prove_and_formalize", "formalize_only")
+    available_actions = ACTIONS if not isolation else ACTIONS_NO_SEARCH
 
     actions = _build_actions(
         lean_mode=lean_mode, has_lean=has_lean, allow_give_up=allow_give_up,
@@ -329,10 +330,11 @@ def planner_system_prompt(*, isolation: bool = False, allow_give_up: bool = True
         "\n"
         "## Output Format\n"
         "\n"
-        "Think step by step, then end your response with a TOML decision block wrapped in exact tags:\n"
+        "Think step by step, then end your response with a TOML decision block wrapped in exact tags.\n"
+        "**MANDATORY fields**: `action` (the action type) and `summary` (one-line description).\n"
         "\n"
         f"{_TOML_OPEN_TAG}\n"
-        'action = "spawn"\n'
+        f'action = "spawn"  # REQUIRED — one of: {", ".join(available_actions)}\n'
         'summary = "One-line description for the log"\n'
         "\n"
         "# Action-specific fields below (include only what's relevant)\n"
@@ -604,8 +606,20 @@ def format_planner_truncated(
 
 # ── TOML parser ─────────────────────────────────────────────
 
-def parse_planner_toml(text: str) -> dict | None:
-    """Extract and parse the TOML decision block from planner output."""
+class ParseError:
+    """Represents a parse failure with a specific error message."""
+    def __init__(self, message: str):
+        self.message = message
+
+
+def parse_planner_toml(text: str) -> dict | ParseError | None:
+    """Extract and parse the TOML decision block from planner output.
+
+    Returns:
+        dict: Successfully parsed plan with a valid action.
+        ParseError: Block was found but had a specific problem (e.g. missing action).
+        None: No OPENPROVER_ACTION block found at all.
+    """
     # Find <OPENPROVER_ACTION> ... </OPENPROVER_ACTION> block
     match = re.search(
         rf"{re.escape(_TOML_OPEN_TAG)}\s*\n?(.*?){re.escape(_TOML_CLOSE_TAG)}",
@@ -624,6 +638,23 @@ def parse_planner_toml(text: str) -> dict | None:
             parsed = tomllib.loads(toml_text)
         except Exception:
             parsed = _parse_toml_minimal(toml_text)
+
+    if parsed is None:
+        parsed = {}
+
+    # Validate action field
+    action = parsed.get("action", "")
+    if not action:
+        return ParseError(
+            'Missing required field: action = "...". '
+            "Every OPENPROVER_ACTION block must include an action type. "
+            f"Valid actions: {', '.join(ACTIONS)}."
+        )
+    if action not in ACTIONS:
+        return ParseError(
+            f'Unknown action: "{action}". '
+            f"Valid actions: {', '.join(ACTIONS)}."
+        )
 
     return parsed
 
@@ -723,4 +754,4 @@ def _parse_toml_minimal(text: str) -> dict | None:
         if entries:
             result[name] = entries
 
-    return result if 'action' in result else None
+    return result or None

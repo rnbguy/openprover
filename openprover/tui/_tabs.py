@@ -209,7 +209,7 @@ class TabsMixin:
         args = entry.get("args", {})
         if "query" in args:
             summary = args["query"][:60]
-        elif "code" in args:
+        elif "code" in args and tool != "lean_verify":
             first = args["code"].strip().split("\n")[0][:60]
             summary = first
         else:

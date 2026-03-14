@@ -499,7 +499,7 @@ class StepsMixin:
         # Action Input (arguments)
         args = entry.get("args", {})
         input_lines: list[str] = []
-        if "code" in args:
+        if "code" in args and tool != "lean_verify":
             input_lines.extend(args["code"].splitlines())
         if "query" in args:
             input_lines.append(args["query"])

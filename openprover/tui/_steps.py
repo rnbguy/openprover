@@ -411,11 +411,16 @@ class StepsMixin:
             add_section("Action Input", detail.splitlines(), color=CYAN)
 
         if action == "spawn":
-            worker_sections: list[str] = []
             worker_tabs = entry.get("worker_tabs") or []
             for tab in worker_tabs:
                 label = getattr(tab, "label", "").strip() or "Worker"
                 task_description = getattr(tab, "task_description", "").strip()
+                if task_description:
+                    add_section(
+                        f"{label} Input",
+                        task_description.splitlines(),
+                        color=CYAN,
+                    )
                 result_lines: list[str] = []
                 log_lines = getattr(tab, "log_lines", []) or []
                 for log_entry in log_lines:
@@ -423,18 +428,8 @@ class StepsMixin:
                     if not text or text == self._dim_separator():
                         continue
                     result_lines.append(text)
-                if not result_lines:
-                    continue
-                worker_sections.append(f"{BOLD}{label}{RESET}")
-                if task_description:
-                    worker_sections.append(f"{DIM}task:{RESET} {task_description}")
-                worker_sections.extend(result_lines)
-                worker_sections.append("")
-            if worker_sections:
-                # Trim trailing blank line between worker blocks.
-                if worker_sections[-1] == "":
-                    worker_sections.pop()
-                add_section("Worker Outputs", worker_sections, color=MAGENTA)
+                if result_lines:
+                    add_section(f"{label} Output", result_lines, color=MAGENTA)
 
         action_output = (entry.get("action_output") or "").rstrip()
         if action_output and action != "spawn":

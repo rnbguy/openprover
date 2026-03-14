@@ -635,6 +635,7 @@ class Prover:
             return self._handle_read_items(plan)
         if action == "write_items":
             self._save_step_meta(step_dir, status="ok", action=action, resp=resp)
+            self.tui.step_entries[self._step_idx]["write_items"] = plan.get("items", [])
             return self._handle_write_items(plan, step_dir)
         if action == "spawn":
             return self._handle_spawn(plan, step_dir, resp)
@@ -1615,6 +1616,8 @@ class Prover:
 
             # Log step in planner tab
             step_idx = self.tui.step_complete(step_num, self.max_steps, action, summary)
+            if action == "write_items":
+                self.tui.step_entries[step_idx]["write_items"] = plan.get("items", [])
             status = meta.get("status", "")
             feedback = meta.get("feedback", "")
             detail = ""

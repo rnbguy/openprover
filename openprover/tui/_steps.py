@@ -295,6 +295,19 @@ class StepsMixin:
         if detail_lines:
             add_section("Action Input", detail_lines, color=CYAN)
 
+        # Per-item full content sections for write_items
+        if action == "write_items":
+            items = plan.get("items", [])
+            for item in items:
+                slug = item.get("slug", "?")
+                content = item.get("content", "")
+                ext = ".lean" if item.get("format") == "lean" else ".md"
+                if content:
+                    item_lines = content.rstrip().splitlines()
+                    add_section(f"{slug}{ext}", item_lines, color=GREEN)
+                else:
+                    add_section(f"{slug}{ext}", [f"{DIM}(delete){RESET}"], color=RED)
+
         self._step_detail_text = "\n".join(parts) if parts else "  (no detail)"
         self._step_detail_scroll = min(
             self._step_detail_scroll,
@@ -427,6 +440,19 @@ class StepsMixin:
         if action_output and action != "spawn":
             add_section("Action Output", action_output.splitlines(), color=MAGENTA)
 
+        # Per-item full content sections for write_items
+        if action == "write_items":
+            items = entry.get("write_items") or []
+            for item in items:
+                slug = item.get("slug", "?")
+                content = item.get("content", "")
+                ext = ".lean" if item.get("format") == "lean" else ".md"
+                if content:
+                    item_lines = content.rstrip().splitlines()
+                    add_section(f"{slug}{ext}", item_lines, color=GREEN)
+                else:
+                    add_section(f"{slug}{ext}", [f"{DIM}(delete){RESET}"], color=RED)
+
         self._step_detail_text = "\n".join(parts) if parts else "  (no detail)"
         self._step_detail_scroll = min(
             self._step_detail_scroll,
@@ -448,7 +474,9 @@ class StepsMixin:
         status = entry.get("status", "")
         duration_ms = entry.get("duration_ms", 0)
         dur_text = f" ({duration_ms / 1000:.1f}s)" if duration_ms else ""
-        if status == "ok":
+        if status == "running":
+            status_badge = f"{YELLOW}● running…{RESET}"
+        elif status == "ok":
             status_badge = f"{GREEN}● succeeded{RESET}{dur_text}"
         else:
             status_badge = f"{RED}● failed{RESET}{dur_text}"

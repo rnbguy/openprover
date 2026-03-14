@@ -744,6 +744,20 @@ class Prover:
             if text:
                 self.tui.log(f"Feedback: {text}", color="yellow")
             self._push_output(f"Human feedback: {user_resp}")
+            # Include partial planner output + feedback in history so next
+            # planner call sees what was interrupted and the user's guidance.
+            partial = self.tui.tabs[0].last_output or ""
+            self.tui.tabs[0].last_output = ""
+            feedback_text = f"Human feedback: {user_resp}" if text else ""
+            self.step_history.append({
+                "step": self.step_num + 1,  # step_num was already decremented
+                "planner": f"(interrupted) {partial}".strip(),
+                "action": "interrupted",
+                "summary": "User interrupted and provided feedback",
+                "output": feedback_text,
+            })
+            if len(self.step_history) > 3:
+                self.step_history = self.step_history[-3:]
             self.tui.show_replan_notice("Feedback noted — will replan next step")
             return "continue"
 

@@ -743,13 +743,21 @@ class Prover:
                 return "stop"
             # Feedback
             text = user_resp.strip()
-            if text:
-                self.tui.log(f"{YELLOW}Feedback:{_RESET} {GREEN}{text}{_RESET}")
+            # Capture partial planner output before step_complete clears it
+            partial = self.tui.tabs[0].last_output or ""
+            self.tui.tabs[0].last_output = ""
+            # Create visible step entry in the TUI step log
+            self.tui.step_complete(
+                self.step_num + 1,  # step_num was already decremented
+                self.max_steps,
+                "interrupted",
+                "User interrupted planner",
+                interrupted=True,
+                feedback=text,
+            )
             self._push_output(f"Human feedback: {user_resp}")
             # Include partial planner output + feedback in history so next
             # planner call sees what was interrupted and the user's guidance.
-            partial = self.tui.tabs[0].last_output or ""
-            self.tui.tabs[0].last_output = ""
             feedback_text = f"Human feedback: {user_resp}" if text else ""
             self.step_history.append({
                 "step": self.step_num + 1,  # step_num was already decremented

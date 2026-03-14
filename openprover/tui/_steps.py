@@ -94,10 +94,13 @@ class StepsMixin:
                 labels.append(f"{YELLOW}rejected with feedback:{RESET} {GREEN}{feedback}{RESET}")
             else:
                 labels.append(f"{YELLOW}rejected{RESET}")
+        elif entry.get("interrupted"):
+            if feedback:
+                labels.append(f"{YELLOW}interrupted with feedback:{RESET} {GREEN}{feedback}{RESET}")
+            else:
+                labels.append(f"{YELLOW}interrupted{RESET}")
         elif feedback:
             labels.append(f"{YELLOW}feedback:{RESET} {GREEN}{feedback}{RESET}")
-        if entry.get("interrupted"):
-            labels.append(f"{YELLOW}interrupted{RESET}")
         if labels:
             line += "\n" + "  " + f' {DIM}·{RESET} '.join(labels)
         return line
@@ -348,10 +351,15 @@ class StepsMixin:
                 )
             else:
                 status_badge = f"{YELLOW}● rejected{RESET}"
+        elif entry.get("interrupted"):
+            if feedback:
+                status_badge = (
+                    f"{YELLOW}● interrupted with feedback:{RESET} {GREEN}{feedback}{RESET}"
+                )
+            else:
+                status_badge = f"{YELLOW}● interrupted{RESET}"
         elif feedback:
             status_badge = f"{YELLOW}● feedback:{RESET} {GREEN}{feedback}{RESET}"
-        elif entry.get("interrupted"):
-            status_badge = f"{YELLOW}● interrupted{RESET}"
         else:
             worker_tabs = entry.get("worker_tabs") or []
             if action == "spawn" and worker_tabs and not all(

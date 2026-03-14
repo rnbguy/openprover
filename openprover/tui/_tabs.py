@@ -159,7 +159,9 @@ class TabsMixin:
                 n_pending = len(tab.pending_actions)
                 if n_pending == 0:
                     tab.spinner_label = ""
-                    tab.streaming = False
+                    # Don't set streaming = False here — the LLM may
+                    # continue producing thinking/text after tool completion.
+                    # stream_end() will handle the final transition.
                 elif n_pending == 1:
                     remaining_idx = next(iter(tab.pending_actions))
                     remaining_tool = tab.entries[remaining_idx].get("tool", "?")

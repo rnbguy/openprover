@@ -175,6 +175,7 @@ class HFClient:
             elapsed_ms = int((time.time() - start) * 1000)
             self._archive(call_num, label, prompt, system_prompt, json_schema,
                           None, "interrupted", elapsed_ms, archive_path)
+            logger.info("[%s] interrupted before call started", label)
             raise Interrupted()
 
         try:
@@ -212,6 +213,7 @@ class HFClient:
             elapsed_ms = int((time.time() - start) * 1000)
             self._archive(call_num, label, prompt, system_prompt, json_schema,
                           None, "interrupted", elapsed_ms, archive_path)
+            logger.info("[%s] interrupted before call started", label)
             raise Interrupted()
 
         req = urllib.request.Request(
@@ -228,6 +230,7 @@ class HFClient:
             if e.code == 499:
                 self._archive(call_num, label, prompt, system_prompt, json_schema,
                               None, "interrupted", elapsed_ms, archive_path)
+                logger.info("[%s] interrupted (HTTP 499) after %dms", label, elapsed_ms)
                 raise Interrupted()
             self._archive(call_num, label, prompt, system_prompt, json_schema,
                           None, f"HTTP {e.code}: {body}", elapsed_ms, archive_path)
@@ -237,6 +240,7 @@ class HFClient:
         if self._interrupted.is_set():
             self._archive(call_num, label, prompt, system_prompt, json_schema,
                           None, "interrupted", elapsed_ms, archive_path)
+            logger.info("[%s] interrupted after %dms", label, elapsed_ms)
             raise Interrupted()
 
         choice = raw["choices"][0]
@@ -369,6 +373,7 @@ class HFClient:
         if interrupted:
             self._archive(call_num, label, prompt, system_prompt, json_schema,
                           None, "interrupted", elapsed_ms, archive_path)
+            logger.info("[%s] interrupted after %dms", label, elapsed_ms)
             raise Interrupted()
 
         thinking_text = "".join(thinking_parts)
@@ -446,6 +451,7 @@ class HFClient:
             elapsed_ms = int((time.time() - start) * 1000)
             self._archive(call_num, label, prompt_text, "", None,
                           None, "interrupted", elapsed_ms, archive_path)
+            logger.info("[%s] interrupted before call started", label)
             raise Interrupted()
 
         try:
@@ -480,6 +486,7 @@ class HFClient:
             if e.code == 499:
                 self._archive(call_num, label, prompt_text, "", None,
                               None, "interrupted", elapsed_ms, archive_path)
+                logger.info("[%s] interrupted (HTTP 499) after %dms", label, elapsed_ms)
                 raise Interrupted()
             self._archive(call_num, label, prompt_text, "", None,
                           None, f"HTTP {e.code}: {body}", elapsed_ms, archive_path)
@@ -524,6 +531,7 @@ class HFClient:
             if e.code == 499:
                 self._archive(call_num, label, prompt_text, "", None,
                               None, "interrupted", elapsed_ms, archive_path)
+                logger.info("[%s] interrupted (HTTP 499) after %dms", label, elapsed_ms)
                 raise Interrupted()
             self._archive(call_num, label, prompt_text, "", None,
                           None, f"HTTP {e.code}: {body}", elapsed_ms, archive_path)
@@ -592,6 +600,7 @@ class HFClient:
         if interrupted:
             self._archive(call_num, label, prompt_text, "", None,
                           None, "interrupted", elapsed_ms, archive_path)
+            logger.info("[%s] interrupted after %dms", label, elapsed_ms)
             raise Interrupted()
 
         thinking_text = "".join(thinking_parts)

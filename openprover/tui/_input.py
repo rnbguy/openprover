@@ -207,6 +207,9 @@ class InputMixin:
             if self.view not in ("main", "whiteboard_split"):
                 self.view = "main"
                 self._redraw()
+            elif self._active_tab.nav_idx >= 0 and self._active_tab.id != "planner":
+                self._open_selected_action_detail()
+                self._redraw()
             elif self._nav_step >= 0:
                 self._open_selected_step_detail()
                 self._redraw()
@@ -327,6 +330,10 @@ class InputMixin:
                 if ch in ('\n', '\r'):
                     if self.view not in ("main", "whiteboard_split"):
                         self.view = "main"
+                        self._redraw()
+                        continue
+                    if self._active_tab.nav_idx >= 0 and self._active_tab.id != "planner":
+                        self._open_selected_action_detail()
                         self._redraw()
                         continue
                     if self._nav_step >= 0:
@@ -590,6 +597,9 @@ class InputMixin:
                 if ch in ('\n', '\r'):
                     if self.view not in ("main", "whiteboard_split"):
                         self.view = "main"
+                        self._redraw()
+                    elif self._active_tab.nav_idx >= 0 and self._active_tab.id != "planner":
+                        self._open_selected_action_detail()
                         self._redraw()
                     elif self._nav_step >= 0:
                         self._open_selected_step_detail()

@@ -93,6 +93,13 @@ class LLMClient:
         logger.info("[%s] calling %s%s", label, self.model,
                     " (streaming)" if use_streaming else "")
 
+        if self._interrupted.is_set():
+            elapsed_ms = 0
+            self._archive(call_num, label, prompt, system_prompt, json_schema,
+                          None, "interrupted", elapsed_ms, archive_path)
+            logger.info("[%s] interrupted before call started", label)
+            raise Interrupted()
+
         cmd = [
             "claude", "-p",
             "--model", self.model,
@@ -146,6 +153,9 @@ class LLMClient:
         if proc.returncode != 0:
             self._archive(call_num, label, prompt, system_prompt, json_schema,
                           None, stderr, elapsed_ms, archive_path)
+            if self._interrupted.is_set():
+                logger.info("[%s] interrupted after %dms", label, elapsed_ms)
+                raise Interrupted()
             raise RuntimeError(f"Claude CLI failed (exit {proc.returncode}): {stderr[:500]}")
 
         try:
@@ -345,6 +355,7 @@ class LLMClient:
         if interrupted:
             self._archive(call_num, label, prompt, system_prompt, json_schema,
                           None, "interrupted", elapsed_ms, archive_path)
+            logger.info("[%s] interrupted after %dms", label, elapsed_ms)
             raise Interrupted()
 
         if result_data is None:

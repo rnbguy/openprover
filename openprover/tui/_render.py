@@ -223,7 +223,12 @@ class RenderMixin:
         return max(self.rows - self._content_start + 1 - 2, 1)
 
     def _step_detail_max_scroll(self) -> int:
-        return max(len(self._build_step_detail_lines()) - self._step_detail_avail_rows(), 0)
+        total = len(self._build_step_detail_lines())
+        avail = self._step_detail_avail_rows()
+        if total <= avail:
+            return 0
+        # +1: when scrolled, indicator row takes 1 row from available space
+        return total - avail + 1
 
     def _build_whiteboard_lines(self, max_w: int) -> list[str]:
         """Build rendered whiteboard lines from self.whiteboard."""
@@ -378,16 +383,14 @@ class RenderMixin:
                 sys.stdout.flush()
                 return
 
-            for row in range(cs, self.rows + 1):
-                self._write_raw(f'\033[{row};1H\033[2K')
-            self._write_raw(f'\033[{cs};1H')
-
             if self.view == "main":
                 tab = self._active_tab
                 lines = self._build_main_lines(tab)
                 spinner_active = (tab.streaming and tab.spinner_label
                                   and not self._has_visible_stream_content(tab))
                 avail = self._main_avail_rows(tab)
+                confirming = (self._confirming and not self._browsing
+                              and self.active_tab_idx == 0)
 
                 # Clamp scroll offset
                 max_off = self._max_scroll_offset(lines, tab)
@@ -398,113 +401,179 @@ class RenderMixin:
                 visible = avail - 1 if len(lines) > avail else avail
                 end = len(lines) - tab.scroll_offset
                 start = max(end - visible, 0)
-                for line in lines[start:end]:
-                    self._write_raw(f'{line}\n')
 
-                # Spinner (no \n so _update_spinner can overwrite in place)
+                # Build all content rows
+                content_rows = list(lines[start:end])
+
                 if spinner_active:
                     ch = SPINNER[tab.spinner_tick]
                     elapsed = int(time.monotonic() - tab.spinner_start)
                     status = self._spinner_status(elapsed, tab.spinner_tokens)
                     bar = f' {GREEN}▎{RESET}' if self._spinner_selected(tab) else '  '
-                    self._write_raw(f'{bar}{DIM}{ch} {tab.spinner_label} {status}{RESET}')
+                    content_rows.append(
+                        f'{bar}{DIM}{ch} {tab.spinner_label} {status}{RESET}')
+
+                # Confirmation lines (inlined, like _redraw_split)
+                if confirming:
+                    fb = "".join(self._confirm_buf)
+                    lbl = self._confirm_accept_label
+                    if self._nav_step >= 0 or self._nav_proposal:
+                        content_rows.append("")
+                        content_rows.append(f' {DIM}○ {lbl}{RESET}')
+                        content_rows.append(f' {DIM}○ give feedback{RESET}')
+                    elif self._confirm_selected == 0:
+                        content_rows.append("")
+                        content_rows.append(f' {GREEN}●{RESET} {BOLD}{lbl}{RESET}')
+                        content_rows.append(f' {DIM}○ give feedback{RESET}')
+                    else:
+                        content_rows.append("")
+                        content_rows.append(f' {DIM}○ {lbl}{RESET}')
+                        content_rows.append(f' {GREEN}●{RESET} {fb}')
 
                 # Scroll indicator
                 above = start
                 below = tab.scroll_offset
+                scroll_line = ""
                 if above > 0 or below > 0:
                     parts = []
                     if above > 0:
                         parts.append(f'↑ {above} above')
                     if below > 0:
                         parts.append(f'↓ {below} below')
-                    indicator = f' {DIM}{" · ".join(parts)}{RESET}'
-                    self._write_raw(f'\033[{self.rows};1H\033[2K{indicator}')
+                    scroll_line = f' {DIM}{" · ".join(parts)}{RESET}'
 
-                if self._confirming and not self._browsing and self.active_tab_idx == 0:
-                    self._draw_confirmation()
+                # Render all rows: overwrite in place (no erase, no flicker)
+                total_rows = self.rows - cs + 1
+                for i in range(total_rows):
+                    row = cs + i
+                    if i < len(content_rows):
+                        c = content_rows[i]
+                    elif i == total_rows - 1 and scroll_line:
+                        c = scroll_line
+                    else:
+                        c = ""
+                    self._write_raw(
+                        f'\033[{row};1H{self._pad_to_width(c, self.cols)}')
+
+                # Position cursor for feedback editing
+                if confirming and self._confirm_selected == 1:
+                    fb_row = cs + len(content_rows) - 1
+                    fb_col = 3 + self._confirm_cursor
+                    self._write_raw(
+                        f'\033[{fb_row};{fb_col + 1}H\033[?25h')
+                elif confirming:
                     self._write_raw('\033[?25h')
-            elif self.view == "whiteboard":
-                self._write_raw(f'  {BOLD}Whiteboard{RESET} {DIM}(esc to return){RESET}\n')
-                self._write_raw(f'  {DIM}{"─" * 40}{RESET}\n')
-                max_w = max(self.cols - 4, 20)
-                wb_lines = self._build_whiteboard_lines(max_w)
-                avail = self._wb_avail_rows()
-                max_off = self._wb_max_scroll(wb_lines)
-                if self.wb_scroll_offset > max_off:
-                    self.wb_scroll_offset = max_off
-                visible = avail - 1 if len(wb_lines) > avail else avail
-                wb_end = len(wb_lines) - self.wb_scroll_offset
-                wb_start = max(wb_end - visible, 0)
-                for iline in wb_lines[wb_start:wb_end]:
-                    self._write_raw(f'{iline}\n')
-                above = wb_start
-                below = self.wb_scroll_offset
-                if above > 0 or below > 0:
-                    parts = []
-                    if above > 0:
-                        parts.append(f'↑ {above} above')
-                    if below > 0:
-                        parts.append(f'↓ {below} below')
-                    indicator = f' {DIM}{" · ".join(parts)}{RESET}'
-                    self._write_raw(f'\033[{self.rows};1H\033[2K{indicator}')
-            # whiteboard_split handled by _redraw_split above
-            elif self.view == "input":
-                tab = self._active_tab
-                status_badge = (
-                    f"{GREEN}● completed{RESET}" if tab.done
-                    else f"{CYAN}● running{RESET}"
-                )
-                self._write_raw(f'  {BOLD}Worker Input{RESET}  {status_badge} {DIM}(esc to return){RESET}\n')
-                self._write_raw(f'  {DIM}{"─" * 40}{RESET}\n')
-                sections: list[str] = []
+                elif spinner_active:
+                    # Leave cursor on spinner row for _update_spinner
+                    spinner_row = cs + len(content_rows) - 1
+                    self._write_raw(f'\033[{spinner_row};1H')
+                else:
+                    # Position cursor after last content for streaming writes
+                    self._write_raw(
+                        f'\033[{min(cs + len(content_rows), self.rows)};1H')
+            else:
+                # Non-main views: clear rows then render sequentially
+                for row in range(cs, self.rows + 1):
+                    self._write_raw(f'\033[{row};1H\033[2K')
+                self._write_raw(f'\033[{cs};1H')
 
-                def add_input_section(title: str, lines: list[str], color: str = BLUE):
-                    if not lines:
-                        return
-                    if sections:
-                        sections.append(f'  {DIM}{"─" * 40}{RESET}')
-                        sections.append("")
-                    sections.append(f"  {color}{BOLD}{title}{RESET}")
-                    for line in lines:
-                        sections.append(f"  {line}" if line else "")
+                if self.view == "whiteboard":
+                    self._write_raw(f'  {BOLD}Whiteboard{RESET} {DIM}(esc to return){RESET}\n')
+                    self._write_raw(f'  {DIM}{"─" * 40}{RESET}\n')
+                    max_w = max(self.cols - 4, 20)
+                    wb_lines = self._build_whiteboard_lines(max_w)
+                    avail = self._wb_avail_rows()
+                    max_off = self._wb_max_scroll(wb_lines)
+                    if self.wb_scroll_offset > max_off:
+                        self.wb_scroll_offset = max_off
+                    visible = avail - 1 if len(wb_lines) > avail else avail
+                    wb_end = len(wb_lines) - self.wb_scroll_offset
+                    wb_start = max(wb_end - visible, 0)
+                    for iline in wb_lines[wb_start:wb_end]:
+                        self._write_raw(f'{iline}\n')
+                    above = wb_start
+                    below = self.wb_scroll_offset
+                    if above > 0 or below > 0:
+                        parts = []
+                        if above > 0:
+                            parts.append(f'↑ {above} above')
+                        if below > 0:
+                            parts.append(f'↓ {below} below')
+                        indicator = f' {DIM}{" · ".join(parts)}{RESET}'
+                        self._write_raw(f'\033[{self.rows};1H\033[2K{indicator}')
+                elif self.view == "input":
+                    tab = self._active_tab
+                    status_badge = (
+                        f"{GREEN}● completed{RESET}" if tab.done
+                        else f"{CYAN}● running{RESET}"
+                    )
+                    self._write_raw(f'  {BOLD}Worker Input{RESET}  {status_badge} {DIM}(esc to return){RESET}\n')
+                    self._write_raw(f'  {DIM}{"─" * 40}{RESET}\n')
+                    sections: list[str] = []
 
-                add_input_section("Worker", [tab.label], color=MAGENTA)
+                    def add_input_section(title: str, lines: list[str], color: str = BLUE):
+                        if not lines:
+                            return
+                        if sections:
+                            sections.append(f'  {DIM}{"─" * 40}{RESET}')
+                            sections.append("")
+                        sections.append(f"  {color}{BOLD}{title}{RESET}")
+                        for line in lines:
+                            sections.append(f"  {line}" if line else "")
 
-                desc = (tab.task_description or "").strip()
-                add_input_section(
-                    "Input",
-                    desc.splitlines() if desc else ["(no task description)"],
-                    color=CYAN,
-                )
+                    add_input_section("Worker", [tab.label], color=MAGENTA)
 
-                for iline in sections:
-                    self._write_raw(f'{iline}\n')
-            elif self.view == "help":
-                self._write_raw(HELP_TEXT)
-                if self.run_params:
-                    self._write_raw(f'\n  {BOLD}Parameters{RESET}\n\n')
-                    for key, val in self.run_params.items():
-                        self._write_raw(f'    {DIM}{key:<16}{RESET}{val}\n')
-            elif self.view == "step_detail":
-                self._write_raw(f'  {BOLD}{self._step_detail_title}{RESET}')
-                self._write_raw(f' {DIM}(esc to return){RESET}\n')
-                self._write_raw(f'  {DIM}{"─" * 40}{RESET}\n')
-                lines = self._build_step_detail_lines()
-                avail = self._step_detail_avail_rows()
-                max_scroll = max(len(lines) - avail, 0)
-                if self._step_detail_scroll > max_scroll:
-                    self._step_detail_scroll = max_scroll
-                start = self._step_detail_scroll
-                end = min(start + avail, len(lines))
-                for dline in lines[start:end]:
-                    self._write_raw(f'{dline}\n')
+                    desc = (tab.task_description or "").strip()
+                    add_input_section(
+                        "Input",
+                        desc.splitlines() if desc else ["(no task description)"],
+                        color=CYAN,
+                    )
 
-                above = start
-                below = max(len(lines) - end, 0)
-                if above > 0 or below > 0:
-                    indicator = f' {DIM}↑ {above} above · ↓ {below} below{RESET}'
-                    self._write_raw(f'\033[{self.rows};1H\033[2K{indicator}')
+                    # Cap output to available rows to prevent scroll-region overflow
+                    avail = max(self.rows - self._content_start + 1 - 2, 1)
+                    if len(sections) > avail:
+                        visible = avail - 1  # reserve 1 row for indicator
+                        for iline in sections[:visible]:
+                            self._write_raw(f'{iline}\n')
+                        below = len(sections) - visible
+                        indicator = f' {DIM}↓ {below} below{RESET}'
+                        self._write_raw(f'\033[{self.rows};1H\033[2K{indicator}')
+                    else:
+                        for iline in sections:
+                            self._write_raw(f'{iline}\n')
+                elif self.view == "help":
+                    self._write_raw(HELP_TEXT)
+                    if self.run_params:
+                        self._write_raw(f'\n  {BOLD}Parameters{RESET}\n\n')
+                        for key, val in self.run_params.items():
+                            self._write_raw(f'    {DIM}{key:<16}{RESET}{val}\n')
+                elif self.view == "step_detail":
+                    self._write_raw(f'  {BOLD}{self._step_detail_title}{RESET}')
+                    self._write_raw(f' {DIM}(esc to return){RESET}\n')
+                    self._write_raw(f'  {DIM}{"─" * 40}{RESET}\n')
+                    lines = self._build_step_detail_lines()
+                    avail = self._step_detail_avail_rows()
+                    max_scroll = self._step_detail_max_scroll()
+                    if self._step_detail_scroll > max_scroll:
+                        self._step_detail_scroll = max_scroll
+                    # Reserve 1 row for indicator when content overflows
+                    visible = avail - 1 if len(lines) > avail else avail
+                    start = self._step_detail_scroll
+                    end = min(start + visible, len(lines))
+                    for dline in lines[start:end]:
+                        self._write_raw(f'{dline}\n')
+
+                    above = start
+                    below = max(len(lines) - end, 0)
+                    if above > 0 or below > 0:
+                        parts = []
+                        if above > 0:
+                            parts.append(f'↑ {above} above')
+                        if below > 0:
+                            parts.append(f'↓ {below} below')
+                        indicator = f' {DIM}{" · ".join(parts)}{RESET}'
+                        self._write_raw(f'\033[{self.rows};1H\033[2K{indicator}')
 
             frame = "".join(self._buf)
             self._buf = None

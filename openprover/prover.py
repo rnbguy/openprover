@@ -1265,6 +1265,7 @@ class Prover:
                 resp["error"] = ""
             except Interrupted:
                 self.tui.stream_end(tab=worker_id)
+                logger.info("[%s] interrupted", worker_id)
                 resp = {"result": "(terminated by user)", "cost": 0.0,
                         "duration_ms": 0, "raw": {}, "error": "interrupted"}
             except RuntimeError as e:
@@ -1394,6 +1395,7 @@ class Prover:
             }
         except Interrupted:
             self.tui.stream_end(tab=worker_id)
+            logger.info("[%s] interrupted", worker_id)
             result = {"result": "(terminated by user)", "cost": total_cost,
                       "duration_ms": total_duration, "raw": {}, "error": "interrupted"}
         except RuntimeError as e:

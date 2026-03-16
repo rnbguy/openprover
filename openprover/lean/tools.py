@@ -78,8 +78,20 @@ def _tool_lean_verify(
     slug = f"worker_verify_{worker_id}"
     path = lean_work_dir.make_file(slug, code)
     success, feedback, _cmd_info = run_lean_check(path, lean_project_dir)
-    status = "ok" if success else "error"
-    result = "OK — no errors" if success else feedback
+    if success:
+        status = "ok"
+        result = "OK — no errors"
+    else:
+        # Distinguish real errors from warnings-only
+        has_error = any(": error:" in line for line in feedback.splitlines())
+        if has_error:
+            status = "error"
+        elif "sorry" in feedback.lower():
+            status = "partial"
+        else:
+            # Warnings only, no errors — treat as success
+            status = "ok"
+        result = feedback
     logger.info("[%s] lean_verify: %s", worker_id, status)
     return (result, status)
 

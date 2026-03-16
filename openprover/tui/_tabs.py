@@ -3,7 +3,7 @@
 import sys
 import time
 
-from ._colors import DIM, BOLD, RESET, WHITE, GREEN, YELLOW, SPINNER, TOOL_STYLE
+from ._colors import DIM, BOLD, RESET, WHITE, GREEN, RED, YELLOW, SPINNER, TOOL_STYLE
 from ._types import _LogEntry, _Tab
 
 
@@ -203,10 +203,12 @@ class TabsMixin:
         color = TOOL_STYLE.get(tool, WHITE)
         if status == "ok":
             icon = f"{GREEN}\u2713{RESET}"
+        elif status == "partial":
+            icon = f"{YELLOW}\u25cf{RESET}"
         elif status == "running":
             icon = ""
         else:
-            icon = f"{YELLOW}\u2717{RESET}"
+            icon = f"{RED}\u2717{RESET}"
         # Short summary from args
         args = entry.get("args", {})
         if "query" in args:

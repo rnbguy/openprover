@@ -97,6 +97,10 @@ class HFClient:
         """Signal the current LLM call to stop."""
         self._interrupted.set()
 
+    def soft_interrupt(self):
+        """Fall back to hard interrupt for HTTP clients."""
+        self._interrupted.set()
+
     def cleanup(self):
         """No-op — HTTP clients have no subprocesses to kill."""
         pass
@@ -104,6 +108,10 @@ class HFClient:
     def clear_interrupt(self):
         """Reset the interrupt flag so new calls can proceed."""
         self._interrupted.clear()
+
+    def clear_soft_interrupt(self):
+        """No-op for HTTP clients."""
+        pass
 
     def _check_server(self):
         """Verify the server is reachable. Fail fast with a clear error."""

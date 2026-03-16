@@ -167,6 +167,8 @@ class Prover:
         self.tui = tui
         self.parallelism = parallelism
         self.shutting_down = False
+        self._workers_active = False
+        self._interrupt_count = 0
         self.step_num = 0
         self._step_idx = 0
         self.step_history: list[dict] = []  # rolling window of last 3 steps
@@ -434,6 +436,7 @@ class Prover:
 
     def _do_step(self) -> str:
         """Execute one planner step. Returns 'continue' or 'stop'."""
+        self._interrupt_count = 0
         logger.info("Step %d (%s)", self.step_num, self.budget.status_str())
         self.autonomous = self.tui.autonomous
 
@@ -1016,6 +1019,8 @@ class Prover:
         # Limit to parallelism
         tasks = tasks[:self.parallelism]
 
+        self._workers_active = True
+        self._interrupt_count = 0
         logger.info("Spawning %d worker(s)", len(tasks))
 
         # Create worker tabs
@@ -1071,6 +1076,7 @@ class Prover:
                         )
 
         self.tui.set_waiting_status("")
+        self._workers_active = False
 
         # Check if any workers were interrupted
         any_interrupted = any(
@@ -1319,10 +1325,14 @@ class Prover:
                 )
                 self.tui.stream_end(tab=worker_id)
 
-                # Phase 2 if truncated
-                if resp.get("finish_reason") in ("length", "max_tokens"):
-                    logger.info("[%s] truncated — Phase 2", worker_id)
-                    self.tui.stream_start("forcing output...", tab=worker_id)
+                # Phase 2 if truncated or soft-interrupted
+                if resp.get("finish_reason") in ("length", "max_tokens", "soft_interrupted"):
+                    reason = resp["finish_reason"]
+                    logger.info("[%s] %s — Phase 2", worker_id, reason)
+                    if reason == "soft_interrupted":
+                        self.worker_llm.clear_soft_interrupt()
+                    label = "interrupted — forcing output..." if reason == "soft_interrupted" else "forcing output..."
+                    self.tui.stream_start(label, tab=worker_id)
                     answer_reserve = getattr(self.worker_llm, 'answer_reserve', 4096)
                     phase2_prompt = (
                         f"{prompt}\n\n---\n\n"
@@ -1440,9 +1450,11 @@ class Prover:
                         })
                     continue
 
-                if finish == "length":
+                if finish in ("length", "soft_interrupted"):
                     # Phase 2: force output, no tools
-                    logger.info("[%s] truncated — Phase 2", worker_id)
+                    if finish == "soft_interrupted":
+                        self.worker_llm.clear_soft_interrupt()
+                    logger.info("[%s] %s — Phase 2", worker_id, finish)
                     assistant_msg = {"role": "assistant", "content": resp["result"] or ""}
                     messages.append(assistant_msg)
                     messages.append({
@@ -1858,7 +1870,20 @@ class Prover:
         return data
 
     def request_interrupt(self):
-        """Called by SIGINT handler. Kills active LLM call or nudges TUI."""
+        """Called by SIGINT handler. Tiered: soft → hard → exit."""
+        self._interrupt_count += 1
+
+        if self._workers_active and self._interrupt_count == 1:
+            # First Ctrl+C during workers: soft interrupt (force Phase 2 output)
+            logger.info("Soft interrupt — forcing worker output")
+            self.tui.log("Soft interrupt — forcing workers to wrap up", color="yellow")
+            self.worker_llm.soft_interrupt()
+            return
+
+        if self._interrupt_count >= 3:
+            self.shutting_down = True
+
+        # Hard interrupt (second during workers, first during planner, or exit)
         self.planner_llm.interrupt()
         self.worker_llm.interrupt()
         self.tui.interrupt()  # in case we're in a confirmation prompt

@@ -28,6 +28,7 @@ class LLMClient:
         self.max_output_tokens = max_output_tokens
         self.mcp_config: dict | None = None  # set by Prover for MCP tool-calling
         self._interrupted = threading.Event()
+        self._soft_interrupted = threading.Event()
         self._active_procs: list[subprocess.Popen] = []
         self._procs_lock = threading.Lock()
         # Override Claude CLI's default 32k output token cap
@@ -39,6 +40,11 @@ class LLMClient:
     def interrupt(self):
         """Signal all active LLM calls to stop."""
         self._interrupted.set()
+        self._kill_active_procs()
+
+    def soft_interrupt(self):
+        """Signal active LLM calls to stop and return partial output."""
+        self._soft_interrupted.set()
         self._kill_active_procs()
 
     def cleanup(self):
@@ -54,6 +60,11 @@ class LLMClient:
     def clear_interrupt(self):
         """Reset the interrupt flag so new calls can proceed."""
         self._interrupted.clear()
+        self._soft_interrupted.clear()
+
+    def clear_soft_interrupt(self):
+        """Reset only the soft interrupt flag (before Phase 2 calls)."""
+        self._soft_interrupted.clear()
 
     def call(
         self,
@@ -219,7 +230,9 @@ class LLMClient:
 
         result_data = None
         thinking_parts = []
+        result_parts = []
         interrupted = False
+        soft_interrupted = False
         # Tool event tracking for MCP calls
         # Claude CLI streams tool_use as content blocks, then emits the
         # tool result as a top-level {"type": "user"} message.
@@ -234,6 +247,10 @@ class LLMClient:
             while True:
                 if self._interrupted.is_set():
                     interrupted = True
+                    proc.kill()
+                    break
+                if self._soft_interrupted.is_set():
+                    soft_interrupted = True
                     proc.kill()
                     break
                 line = proc.stdout.readline()
@@ -274,6 +291,7 @@ class LLMClient:
                                 thinking_parts.append(thinking)
                                 callback(thinking, "thinking")
                             elif text:
+                                result_parts.append(text)
                                 callback(text, "text")
 
                     elif etype == "content_block_stop":
@@ -350,9 +368,27 @@ class LLMClient:
 
         elapsed_ms = int((time.time() - start) * 1000)
 
-        # Catch race: process killed by interrupt() while readline() blocked
-        if not interrupted and self._interrupted.is_set():
+        # Catch race: flags set while readline() blocked
+        if not soft_interrupted and not interrupted and self._soft_interrupted.is_set():
+            soft_interrupted = True
+        if not interrupted and not soft_interrupted and self._interrupted.is_set():
             interrupted = True
+
+        if soft_interrupted:
+            partial_text = "".join(result_parts)
+            thinking_text = "".join(thinking_parts)
+            self._archive(call_num, label, prompt, system_prompt, json_schema,
+                          None, "soft_interrupted", elapsed_ms, archive_path,
+                          thinking=thinking_text, result_text=partial_text)
+            logger.info("[%s] soft-interrupted after %dms", label, elapsed_ms)
+            return {
+                "result": partial_text,
+                "thinking": thinking_text,
+                "cost": 0.0,
+                "duration_ms": elapsed_ms,
+                "raw": {},
+                "finish_reason": "soft_interrupted",
+            }
 
         if interrupted:
             self._archive(call_num, label, prompt, system_prompt, json_schema,

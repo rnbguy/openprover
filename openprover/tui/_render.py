@@ -222,6 +222,41 @@ class RenderMixin:
             lines.extend(self._wrap_visual_text(dline, max_w))
         return lines
 
+    def _input_avail_rows(self) -> int:
+        # One title line + one separator line.
+        return max(self.rows - self._content_start + 1 - 2, 1)
+
+    def _input_max_scroll(self) -> int:
+        total = len(self._build_input_lines())
+        avail = self._input_avail_rows()
+        if total <= avail:
+            return 0
+        return total - avail + 1
+
+    def _build_input_lines(self) -> list[str]:
+        tab = self._active_tab
+        sections: list[str] = []
+
+        def add_input_section(title: str, lines: list[str], color: str = BLUE):
+            if not lines:
+                return
+            if sections:
+                sections.append(f'  {DIM}{"─" * 40}{RESET}')
+                sections.append("")
+            sections.append(f"  {color}{BOLD}{title}{RESET}")
+            for line in lines:
+                sections.append(f"  {line}" if line else "")
+
+        add_input_section("Worker", [tab.label], color=MAGENTA)
+
+        desc = (tab.task_description or "").strip()
+        add_input_section(
+            "Input",
+            desc.splitlines() if desc else ["(no task description)"],
+            color=CYAN,
+        )
+        return sections
+
     def _step_detail_avail_rows(self) -> int:
         # One title line + one separator line.
         return max(self.rows - self._content_start + 1 - 2, 1)
@@ -537,39 +572,27 @@ class RenderMixin:
                     )
                     self._write_raw(f'  {BOLD}Worker Input{RESET}  {status_badge} {DIM}(esc to return){RESET}\n')
                     self._write_raw(f'  {DIM}{"─" * 40}{RESET}\n')
-                    sections: list[str] = []
+                    lines = self._build_input_lines()
+                    avail = self._input_avail_rows()
+                    max_scroll = self._input_max_scroll()
+                    if self._input_scroll > max_scroll:
+                        self._input_scroll = max_scroll
+                    visible = avail - 1 if len(lines) > avail else avail
+                    start = self._input_scroll
+                    end = min(start + visible, len(lines))
+                    for dline in lines[start:end]:
+                        self._write_raw(f'{dline}\n')
 
-                    def add_input_section(title: str, lines: list[str], color: str = BLUE):
-                        if not lines:
-                            return
-                        if sections:
-                            sections.append(f'  {DIM}{"─" * 40}{RESET}')
-                            sections.append("")
-                        sections.append(f"  {color}{BOLD}{title}{RESET}")
-                        for line in lines:
-                            sections.append(f"  {line}" if line else "")
-
-                    add_input_section("Worker", [tab.label], color=MAGENTA)
-
-                    desc = (tab.task_description or "").strip()
-                    add_input_section(
-                        "Input",
-                        desc.splitlines() if desc else ["(no task description)"],
-                        color=CYAN,
-                    )
-
-                    # Cap output to available rows to prevent scroll-region overflow
-                    avail = max(self.rows - self._content_start + 1 - 2, 1)
-                    if len(sections) > avail:
-                        visible = avail - 1  # reserve 1 row for indicator
-                        for iline in sections[:visible]:
-                            self._write_raw(f'{iline}\n')
-                        below = len(sections) - visible
-                        indicator = f' {DIM}↓ {below} below{RESET}'
+                    above = start
+                    below = max(len(lines) - end, 0)
+                    if above > 0 or below > 0:
+                        parts = []
+                        if above > 0:
+                            parts.append(f'↑ {above} above')
+                        if below > 0:
+                            parts.append(f'↓ {below} below')
+                        indicator = f' {DIM}{" · ".join(parts)}{RESET}'
                         self._write_raw(f'\033[{self.rows};1H\033[2K{indicator}')
-                    else:
-                        for iline in sections:
-                            self._write_raw(f'{iline}\n')
                 elif self.view == "help":
                     self._write_raw(HELP_TEXT)
                     if self.run_params:

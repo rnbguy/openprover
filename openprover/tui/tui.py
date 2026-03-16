@@ -53,6 +53,7 @@ class TUI(TextMixin, StreamMixin, NavMixin, TabsMixin, StepsMixin,
         self._step_detail_title = ""
         self._step_detail_idx = -1
         self._step_detail_scroll = 0
+        self._input_scroll = 0
         # Confirmation state
         self._confirming = False
         self._browsing = False
@@ -201,9 +202,10 @@ class TUI(TextMixin, StreamMixin, NavMixin, TabsMixin, StepsMixin,
         if len(tab.log_lines) > 500:
             tab.log_lines = tab.log_lines[-500:]
         if tab is self._active_tab and self._main_visible:
-            if tab.scroll_offset > 0 or self.view == "whiteboard_split":
-                tab.scroll_offset = 0
-                self._redraw()
+            if self.view == "whiteboard_split":
+                self._split_dirty = True
+            elif tab.scroll_offset > 0:
+                pass  # Stay where we are; new content is at the bottom
             else:
                 self._write(f' {text}\n')
 

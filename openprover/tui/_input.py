@@ -661,5 +661,10 @@ class InputMixin:
         self._redraw()
 
     def _toggle_view(self, target: str):
-        self.view = "main" if self.view == target else target
+        if self.view == target:
+            self.view = "main"
+        else:
+            self.view = target
+            if target == "input":
+                self._input_scroll = 0
         self._redraw()

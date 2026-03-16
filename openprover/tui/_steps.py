@@ -555,9 +555,10 @@ class StepsMixin:
         else:
             self._replan_notice_entry = entry
         if planner is self._active_tab and self._main_visible:
-            if planner.scroll_offset > 0 or self.view == "whiteboard_split":
-                planner.scroll_offset = 0
-                self._redraw()
+            if self.view == "whiteboard_split":
+                self._split_dirty = True
+            elif planner.scroll_offset > 0:
+                pass  # Stay where we are; new content is at the bottom
             else:
                 self._write(f' {entry.text}\n')
 

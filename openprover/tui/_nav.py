@@ -49,11 +49,14 @@ class NavMixin:
                 self._restore_worker_tabs()
                 if self._current_proposal is not None:
                     self._nav_proposal = True
-                self._scroll_selection_into_view()
+                    self._scroll_selection_into_view()
+                else:
+                    # No proposal — scroll to bottom
+                    self._active_tab.scroll_offset = 0
         elif self._nav_proposal:
-            # Proposal → back to accept/feedback
+            # Proposal → back to accept/feedback, scroll to bottom
             self._nav_proposal = False
-            self._scroll_selection_into_view()
+            self._active_tab.scroll_offset = 0
 
     def _tab_nav_up(self, tab: _Tab):
         """Navigate up in a non-planner tab's entries."""
@@ -72,9 +75,11 @@ class NavMixin:
         if tab.nav_idx >= 0:
             if tab.nav_idx < len(tab.entries) - 1:
                 tab.nav_idx += 1
+                self._scroll_selection_into_view()
             else:
+                # Last entry → deselect and scroll to bottom
                 tab.nav_idx = -1
-        self._scroll_selection_into_view()
+                tab.scroll_offset = 0
 
     def _open_selected_action_detail(self):
         """Open detail view for the selected action in a worker tab."""
@@ -187,6 +192,11 @@ class NavMixin:
             self._step_detail_scroll = max(self._step_detail_scroll - page, 0)
             self._redraw()
             return
+        if self.view == "input":
+            page = max(self._input_avail_rows() - 1, 1)
+            self._input_scroll = max(self._input_scroll - page, 0)
+            self._redraw()
+            return
         if self.view == "whiteboard":
             avail = self._wb_avail_rows()
             page = max(avail - 1, 1)
@@ -209,6 +219,12 @@ class NavMixin:
             self._step_detail_scroll = min(self._step_detail_scroll + page, max_scroll)
             self._redraw()
             return
+        if self.view == "input":
+            page = max(self._input_avail_rows() - 1, 1)
+            max_scroll = self._input_max_scroll()
+            self._input_scroll = min(self._input_scroll + page, max_scroll)
+            self._redraw()
+            return
         if self.view == "whiteboard":
             avail = self._wb_avail_rows()
             page = max(avail - 1, 1)
@@ -223,6 +239,10 @@ class NavMixin:
     def _scroll_lines_up(self, n: int = 3):
         if self.view == "step_detail":
             self._step_detail_scroll = max(self._step_detail_scroll - n, 0)
+            self._redraw()
+            return
+        if self.view == "input":
+            self._input_scroll = max(self._input_scroll - n, 0)
             self._redraw()
             return
         if self.view == "whiteboard":
@@ -241,6 +261,11 @@ class NavMixin:
         if self.view == "step_detail":
             max_scroll = self._step_detail_max_scroll()
             self._step_detail_scroll = min(self._step_detail_scroll + n, max_scroll)
+            self._redraw()
+            return
+        if self.view == "input":
+            max_scroll = self._input_max_scroll()
+            self._input_scroll = min(self._input_scroll + n, max_scroll)
             self._redraw()
             return
         if self.view == "whiteboard":

@@ -91,22 +91,23 @@ class StepsMixin:
         if action == "spawn":
             worker_tabs = entry.get("worker_tabs") or []
             verdicts = entry.get("verdicts") or {}
-            for j, tab in enumerate(worker_tabs):
+            widx = 0
+            for tab in worker_tabs:
                 label = getattr(tab, "label", "")
                 if not label.startswith("Worker"):
                     continue  # skip verifier tabs
                 task_desc = getattr(tab, "task_description", "").strip()
-                first_line = (task_desc.split("\n")[0][:60]
-                              if task_desc else "(no description)")
-                line += f'\n  {DIM}[{j}]{RESET} {first_line}'
-                verdict = verdicts.get(j, "")
+                first_line = task_desc.split("\n")[0][:80] if task_desc else "(no description)"
+                line += f'\n  {DIM}•{RESET} {first_line}'
+                verdict = verdicts.get(widx, "")
                 if verdict:
                     if "CORRECT" in verdict and "FLAWED" not in verdict:
-                        line += f'\n      {GREEN}{verdict}{RESET}'
+                        line += f'\n    {GREEN}{verdict}{RESET}'
                     elif "CRITICALLY FLAWED" in verdict:
-                        line += f'\n      {RED}{verdict}{RESET}'
+                        line += f'\n    {RED}{verdict}{RESET}'
                     else:
-                        line += f'\n      {YELLOW}{verdict}{RESET}'
+                        line += f'\n    {YELLOW}{verdict}{RESET}'
+                widx += 1
         labels: list[str] = []
         feedback = (entry.get("feedback") or "").strip()
         if entry.get("rejected"):
@@ -441,15 +442,31 @@ class StepsMixin:
 
         if action == "spawn":
             worker_tabs = entry.get("worker_tabs") or []
+            # Collect worker output lines by index for verifier input display
+            worker_output_by_idx: dict[str, list[str]] = {}
             for tab in worker_tabs:
                 label = getattr(tab, "label", "").strip() or "Worker"
+                is_verifier = label.startswith("Verify")
                 task_description = getattr(tab, "task_description", "").strip()
-                if task_description:
+
+                if is_verifier:
+                    # Show the worker output being verified as input
+                    # Extract worker index from label like "Verify 0"
+                    v_idx = label.split()[-1] if " " in label else ""
+                    worker_lines = worker_output_by_idx.get(v_idx, [])
+                    if worker_lines:
+                        add_section(
+                            f"{label} — Worker {v_idx} Output",
+                            worker_lines,
+                            color=CYAN,
+                        )
+                elif task_description:
                     add_section(
                         f"{label} Input",
                         task_description.splitlines(),
                         color=CYAN,
                     )
+
                 result_lines: list[str] = []
                 log_lines = getattr(tab, "log_lines", []) or []
                 for log_entry in log_lines:
@@ -459,6 +476,11 @@ class StepsMixin:
                     result_lines.append(text)
                 if result_lines:
                     add_section(f"{label} Output", result_lines, color=MAGENTA)
+
+                # Store worker output for verifier input display
+                if not is_verifier:
+                    w_idx = label.split()[-1] if " " in label else ""
+                    worker_output_by_idx[w_idx] = result_lines
 
         action_output = (entry.get("action_output") or "").rstrip()
         # Per-item full content sections for write_items (before action output

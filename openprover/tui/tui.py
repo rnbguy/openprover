@@ -37,7 +37,8 @@ class TUI(TextMixin, StreamMixin, NavMixin, TabsMixin, StepsMixin,
         self._active = False
         self.theorem_name = ""
         self.step_num = 0
-        self.max_steps = 0
+        self.budget_status = ""
+        self._budget_ref = None  # Budget object reference for live updates
         self._old_sigwinch = None
         # Background key reader
         self._key_queue: queue.Queue[str] = queue.Queue()
@@ -103,12 +104,11 @@ class TUI(TextMixin, StreamMixin, NavMixin, TabsMixin, StepsMixin,
         return None
 
     def setup(self, theorem_name: str, work_dir: str,
-              step_num: int = 0, max_steps: int = 50,
+              step_num: int = 0,
               model_name: str = ""):
         self.theorem_name = theorem_name
         self.work_dir = work_dir
         self.step_num = step_num
-        self.max_steps = max_steps
         self.model_name = model_name
         size = shutil.get_terminal_size()
         self.cols, self.rows = size.columns, size.lines
@@ -181,9 +181,24 @@ class TUI(TextMixin, StreamMixin, NavMixin, TabsMixin, StepsMixin,
 
     # ── Step counter ────────────────────────────────────────────
 
-    def update_step(self, step_num: int, max_steps: int):
+    def update_step(self, step_num: int):
         self.step_num = step_num
-        self.max_steps = max_steps
+        if self._budget_ref:
+            self.budget_status = self._budget_ref.status_str()
+        with self._write_lock:
+            self._buf = []
+            self._write_raw('\033[s')
+            self._draw_header()
+            self._write_raw('\033[u')
+            frame = "".join(self._buf)
+            self._buf = None
+            sys.stdout.write(frame)
+            sys.stdout.flush()
+
+    def update_budget(self, status: str):
+        self.budget_status = status
+        if not self._active:
+            return
         with self._write_lock:
             self._buf = []
             self._write_raw('\033[s')

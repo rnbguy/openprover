@@ -4,6 +4,7 @@ import os
 import queue
 import select
 import sys
+import time as _time
 
 from ._colors import DIM, GREEN, RESET
 
@@ -12,6 +13,7 @@ class InputMixin:
 
     def _bg_loop(self):
         fd = sys.stdin.fileno()
+        _last_budget_refresh = 0.0
         while not self._bg_stop:
             try:
                 self._advance_tab_spinners()
@@ -22,6 +24,14 @@ class InputMixin:
                 if self._split_dirty:
                     self._split_dirty = False
                     self._redraw()
+
+                # Live-update budget display for time mode (~1s interval)
+                budget = getattr(self, '_budget_ref', None)
+                if budget and budget.mode == "time":
+                    now = _time.monotonic()
+                    if now - _last_budget_refresh >= 1.0:
+                        _last_budget_refresh = now
+                        self.update_budget(budget.status_str())
 
                 # Process queued keys when idle (no streaming, no confirmation)
                 if not self._confirming and not tab.streaming:

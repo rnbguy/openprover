@@ -15,6 +15,8 @@ class HeadlessTUI:
         self.step_entries: list[dict] = []
         self.pending_action: str | None = None
         self.trace_visible = False
+        self.budget_status = ""
+        self._budget_ref = None
 
     @property
     def autonomous(self) -> bool:
@@ -25,7 +27,7 @@ class HeadlessTUI:
         pass
 
     def setup(self, theorem_name: str, work_dir: str,
-              step_num: int = 0, max_steps: int = 50,
+              step_num: int = 0,
               model_name: str = ""):
         print(f"[openprover] {theorem_name}", flush=True)
         print(f"[openprover] {work_dir} | {model_name}", flush=True)
@@ -57,7 +59,7 @@ class HeadlessTUI:
     def stream_end(self, tab: str = "planner"):
         pass
 
-    def step_complete(self, step_num: int, max_steps: int,
+    def step_complete(self, step_num: int,
                       action: str, summary: str, detail: str = "",
                       rejected: bool = False, interrupted: bool = False,
                       feedback: str = "") -> int:
@@ -69,7 +71,9 @@ class HeadlessTUI:
         if feedback.strip():
             suffix.append(f"feedback: {feedback.strip()}")
         tail = f" [{' | '.join(suffix)}]" if suffix else ""
-        print(f"[step {step_num}/{max_steps}] {action} \u2014 {summary}{tail}",
+        budget = getattr(self, 'budget_status', '')
+        label = f"step {step_num} \u00b7 {budget}" if budget else f"step {step_num}"
+        print(f"[{label}] {action} \u2014 {summary}{tail}",
               flush=True)
         idx = len(self.step_entries)
         self.step_entries.append({
@@ -81,8 +85,11 @@ class HeadlessTUI:
         })
         return idx
 
-    def update_step(self, step_num: int, max_steps: int):
+    def update_step(self, step_num: int):
         pass
+
+    def update_budget(self, status: str):
+        self.budget_status = status
 
     def update_step_detail(self, step_idx: int, detail: str):
         if 0 <= step_idx < len(self.step_entries):

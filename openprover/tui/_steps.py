@@ -115,7 +115,7 @@ class StepsMixin:
                 log_entry.text = line
                 break
 
-    def step_complete(self, step_num: int, max_steps: int,
+    def step_complete(self, step_num: int,
                       action: str, summary: str, detail: str = "",
                       rejected: bool = False, interrupted: bool = False,
                       feedback: str = "") -> int:
@@ -141,7 +141,7 @@ class StepsMixin:
         line = self._format_step_line(entry)
         self._tab_log(planner, line, step_idx=idx)
         self.step_entries.append(entry)
-        self.update_step(step_num, max_steps)
+        self.update_step(step_num)
         if self._main_visible:
             self._redraw()
         return idx

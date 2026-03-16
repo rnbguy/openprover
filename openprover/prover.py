@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from . import prompts
+from .budget import Budget
 from .lean import LeanTheorem, LeanWorkDir, run_lean_check, WORKER_TOOLS, execute_worker_tool
 from .llm import Interrupted, LLMClient
 from .tui import TUI
@@ -141,10 +142,10 @@ class _TUILogHandler(logging.Handler):
 class Prover:
     def __init__(self, work_dir: Path, theorem_text: str, mode: str,
                  make_llm, model_name: str,
-                 max_steps: int,
+                 budget: 'Budget',
                  autonomous: bool, verbose: bool, tui: TUI,
                  isolation: bool = False,
-                 parallelism: int = 1, give_up_ratio: float = 0.5,
+                 parallelism: int = 1,
                  lean_project_dir: Path | None = None,
                  lean_theorem_text: str = "",
                  proof_md_text: str = "",
@@ -159,11 +160,10 @@ class Prover:
         self.lean_items = lean_items
         self.lean_worker_actions = lean_worker_actions
         self._history_budget_override = history_budget
-        self.max_steps = max_steps
+        self.budget = budget
         self.autonomous = autonomous
         self.verbose = verbose
         self.isolation = isolation
-        self.give_up_ratio = give_up_ratio
         self.tui = tui
         self.parallelism = parallelism
         self.shutting_down = False
@@ -222,7 +222,7 @@ class Prover:
         self._setup_logging()
         logger.info("Mode: %s, Model: %s", self.mode, self.model)
         if self.resumed:
-            logger.info("Resuming from step %d/%d", self.step_num, self.max_steps)
+            logger.info("Resuming from step %d (%s)", self.step_num, self.budget.status_str())
 
         # LLM clients (archive_dir is fallback; per-call paths used for step calls)
         archive_dir = self.work_dir / "archive"
@@ -293,30 +293,32 @@ class Prover:
             theorem_name=self.theorem_name,
             work_dir=str(self.work_dir),
             step_num=self.step_num,
-            max_steps=self.max_steps,
             model_name=self.model,
         )
+        self.tui._budget_ref = self.budget
         self._setup_tui_logging()
         self.tui.autonomous = self.autonomous
         self.tui.whiteboard = self.whiteboard
         self.tui.run_params = {
             "model": self.model,
-            "max_steps": str(self.max_steps),
+            "budget": self.budget.limit_str(),
+            "conclude_after": f"{self.budget.conclude_after:.0%}",
+            "give_up_after": f"{self.budget.give_up_after:.0%}",
             "parallelism": str(self.parallelism),
-            "give_up_after": f"{self.give_up_ratio:.0%}",
             "isolation": "on" if self.isolation else "off",
             "mode": self.mode,
         }
 
         if self.resumed:
             self._load_history()
+            self._restore_budget_tokens()
             self.tui.log(
-                f"Resuming from step {self.step_num}/{self.max_steps}",
+                f"Resuming from step {self.step_num} ({self.budget.status_str()} spent)",
                 color="cyan",
             )
             self._maybe_respawn_interrupted_workers()
 
-        while self.step_num < self.max_steps and not self.shutting_down:
+        while not self.budget.is_exhausted() and not self.shutting_down:
             self.step_num += 1
             self._current_planner_result = ""
             self._current_action_output = ""
@@ -336,6 +338,9 @@ class Prover:
                     self.step_history = self.step_history[-3:]
             self._save_step_history()
             if result == "stop":
+                break
+            if self.budget.should_conclude():
+                self.tui.log("Budget threshold reached — concluding.", color="yellow")
                 break
 
         if not self.shutting_down and self.tui.step_entries:
@@ -429,7 +434,7 @@ class Prover:
 
     def _do_step(self) -> str:
         """Execute one planner step. Returns 'continue' or 'stop'."""
-        logger.info("Step %d/%d", self.step_num, self.max_steps)
+        logger.info("Step %d (%s)", self.step_num, self.budget.status_str())
         self.autonomous = self.tui.autonomous
 
         # Check for autonomous mode actions
@@ -455,7 +460,7 @@ class Prover:
             self._current_step_action = "spawn"
             self._current_step_summary = summary
             self._step_idx = self.tui.step_complete(
-                self.step_num, self.max_steps, "spawn", summary,
+                self.step_num, "spawn", summary,
             )
             return self._handle_spawn(plan, step_dir)
 
@@ -469,8 +474,7 @@ class Prover:
             whiteboard=self.whiteboard,
             repo_index=repo_index,
             step_history=list(self.step_history),
-            step_num=self.step_num,
-            max_steps=self.max_steps,
+            budget_status=self.budget.summary_str(),
             parallelism=self.parallelism,
             has_lean_theorem=bool(self.lean_theorem_text),
             has_proof_md=(self.work_dir / "PROOF.md").exists(),
@@ -482,7 +486,7 @@ class Prover:
         MAX_PARSE_RETRIES = 2
         system_prompt = prompts.planner_system_prompt(
             isolation=self.isolation,
-            allow_give_up=self.step_num >= self.max_steps * self.give_up_ratio,
+            allow_give_up=self.budget.allow_give_up(),
             lean_mode=self.mode,
             lean_items=self.lean_items,
         )
@@ -523,6 +527,7 @@ class Prover:
                 self._save_step_meta(step_dir, status="llm_error", error=str(e))
                 return "continue"
             self.tui.stream_end(tab="planner")
+            self._track_output_tokens(resp)
             last_resp = resp
             logger.info("Planner: %dms $%.4f",
                          resp.get("duration_ms", 0), resp.get("cost", 0))
@@ -571,6 +576,7 @@ class Prover:
                         self._save_step_meta(step_dir, status="llm_error", error=str(e))
                         return "continue"
                     self.tui.stream_end(tab="planner")
+                    self._track_output_tokens(resp)
                     last_resp = resp
                     plan = prompts.parse_planner_toml(resp["result"])
                     if isinstance(plan, prompts.ParseError):
@@ -618,7 +624,7 @@ class Prover:
             return result
 
         self._step_idx = self.tui.step_complete(
-            self.step_num, self.max_steps, action, summary,
+            self.step_num, action, summary,
         )
 
         # Dispatch
@@ -695,7 +701,6 @@ class Prover:
             )
             self.tui.step_complete(
                 self.step_num,
-                self.max_steps,
                 action,
                 summary,
                 detail=detail,
@@ -749,7 +754,6 @@ class Prover:
             # Create visible step entry in the TUI step log
             self.tui.step_complete(
                 self.step_num + 1,  # step_num was already decremented
-                self.max_steps,
                 "interrupted",
                 "User interrupted planner",
                 interrupted=True,
@@ -881,14 +885,15 @@ class Prover:
         return "continue"
 
     def _handle_give_up(self) -> str:
-        if self.step_num < self.max_steps * max(self.give_up_ratio, 0.8):
+        if not self.budget.allow_give_up():
+            pct = int(self.budget.fraction_spent() * 100)
             self.tui.log(
-                f"Not giving up — only {self.step_num}/{self.max_steps} steps used",
+                f"Not giving up — only {pct}% of budget spent",
                 color="yellow",
             )
-            self._push_output("give_up rejected: too many steps remaining. Keep trying.")
+            self._push_output("give_up rejected: too much budget remaining. Keep trying.")
             return "continue"
-        logger.info("Giving up at step %d/%d", self.step_num, self.max_steps)
+        logger.info("Giving up at step %d (budget %s)", self.step_num, self.budget.status_str())
         self.tui.log("Stuck — no more ideas.", color="yellow")
         return "stop"
 
@@ -1101,6 +1106,11 @@ class Prover:
 
         self._push_output("\n\n".join(parts))
 
+        # Track worker output tokens in budget
+        for wresp in worker_resps:
+            if wresp:
+                self._track_output_tokens(wresp)
+
         # Save step metadata with worker details
         status = "interrupted" if any_interrupted else "ok"
         self._save_step_meta(
@@ -1158,6 +1168,7 @@ class Prover:
                 archive_path=workers_dir / "search_call.json",
             )
             self.tui.stream_end(tab=wid)
+            self._track_output_tokens(search_resp)
             result = search_resp["result"]
             search_resp["error"] = ""
             self._push_output(result)
@@ -1464,6 +1475,30 @@ class Prover:
             "cache_read_tokens": usage.get("cache_read_input_tokens", 0),
         }
 
+    def _track_output_tokens(self, resp: dict):
+        """Add output tokens from an LLM response to the budget."""
+        tokens = self._extract_token_usage(resp)
+        n = tokens["output_tokens"]
+        if n > 0:
+            self.budget.add_output_tokens(n)
+            self.tui.update_budget(self.budget.status_str())
+
+    def _restore_budget_tokens(self):
+        """On resume, sum output tokens from existing step_meta.toml files."""
+        if self.budget.mode != "tokens":
+            return
+        steps_dir = self.work_dir / "steps"
+        if not steps_dir.exists():
+            return
+        total = 0
+        for meta_path in sorted(steps_dir.glob("step_*/step_meta.toml")):
+            text = meta_path.read_text()
+            for m in re.finditer(r'^output_tokens\s*=\s*(\d+)', text, re.MULTILINE):
+                total += int(m.group(1))
+        if total > 0:
+            self.budget.add_output_tokens(total)
+            logger.info("Restored %d output tokens from history", total)
+
     def _save_step_meta(self, step_dir: Path, *,
                         status: str,
                         action: str = "",
@@ -1525,7 +1560,7 @@ class Prover:
             whiteboard=self.whiteboard,
             repo_index=repo_index,
             steps_taken=self.step_num,
-            max_steps=self.max_steps,
+            budget_summary=self.budget.summary_str(),
             proof=self.proof_text,
         )
         self.tui.stream_start("writing discussion", tab="planner")
@@ -1573,16 +1608,17 @@ class Prover:
             theorem_name=self.theorem_name,
             work_dir=str(self.work_dir),
             step_num=self.step_num,
-            max_steps=self.max_steps,
             model_name=self.model,
         )
+        self.tui._budget_ref = self.budget
         self.tui.autonomous = False
         self.tui.whiteboard = self.whiteboard
         self.tui.run_params = {
             "model": self.model,
-            "max_steps": str(self.max_steps),
+            "budget": self.budget.limit_str(),
+            "conclude_after": f"{self.budget.conclude_after:.0%}",
+            "give_up_after": f"{self.budget.give_up_after:.0%}",
             "parallelism": str(self.parallelism),
-            "give_up_after": f"{self.give_up_ratio:.0%}",
             "isolation": "on" if self.isolation else "off",
             "mode": self.mode,
         }
@@ -1624,7 +1660,7 @@ class Prover:
             meta = self._read_step_meta(step_dir)
 
             # Log step in planner tab
-            step_idx = self.tui.step_complete(step_num, self.max_steps, action, summary)
+            step_idx = self.tui.step_complete(step_num, action, summary)
             if action == "write_items":
                 self.tui.step_entries[step_idx]["write_items"] = plan.get("items", [])
             status = meta.get("status", "")

@@ -15,7 +15,9 @@ class RenderMixin:
 
     def _draw_header(self):
         w = self.cols
-        step = f"step {self.step_num}/{self.max_steps}" if self.step_num else ""
+        budget = getattr(self, '_budget_ref', None)
+        bs = budget.status_str() if budget else self.budget_status
+        step = f"step {self.step_num} · {bs}" if self.step_num else (bs or "")
 
         # Row 1
         model = getattr(self, 'model_name', '') or ''

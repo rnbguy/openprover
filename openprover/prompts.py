@@ -414,8 +414,7 @@ def format_planner_prompt(
     whiteboard: str,
     repo_index: str,
     step_history: list[dict],
-    step_num: int,
-    max_steps: int,
+    budget_status: str,
     parallelism: int = 1,
     *,
     has_lean_theorem: bool = False,
@@ -464,7 +463,8 @@ def format_planner_prompt(
             if output:
                 output = _truncate_keep_end(output, output_limit)
                 parts.append(f"\n\n### Result\n\n{output}")
-    parts.append(f"\n\nMax {parallelism} worker(s) per spawn. What's the most productive next move?")
+    parts.append(f"\n\nBudget: {budget_status}.")
+    parts.append(f"\nMax {parallelism} worker(s) per spawn. What's the most productive next move?")
     return "".join(parts)
 
 
@@ -551,7 +551,7 @@ def format_discussion_prompt(
     whiteboard: str,
     repo_index: str,
     steps_taken: int,
-    max_steps: int,
+    budget_summary: str,
     proof: str = "",
 ) -> str:
     parts = [
@@ -562,7 +562,7 @@ def format_discussion_prompt(
         parts.append(f"\n\n# Repository\n\n{repo_index}")
     if proof:
         parts.append(f"\n\n# Proof\n\n{proof}")
-    parts.append(f"\n\n{steps_taken}/{max_steps} steps used.")
+    parts.append(f"\n\n{steps_taken} steps taken. Budget: {budget_summary}.")
     parts.append(
         "\n\nWrite a brief discussion: result, approaches tried, key insights, "
         "open gaps, recommendations. Use $ and $$ for math."

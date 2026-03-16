@@ -9,6 +9,7 @@ from datetime import datetime
 from pathlib import Path
 
 from openprover import __version__
+from .budget import Budget, parse_duration
 from .llm import LLMClient, HFClient
 from .prover import Prover, slugify
 from .tui import TUI, HeadlessTUI
@@ -24,7 +25,9 @@ def _cli_flag_given(*flags: str) -> bool:
 
 
 def _save_run_config(work_dir: Path, *, planner_model: str, worker_model: str,
-                     max_steps: int, parallelism: int, give_up_ratio: float,
+                     budget_mode: str, budget_limit: int,
+                     conclude_after: float,
+                     parallelism: int, give_up_ratio: float,
                      isolation: bool, autonomous: bool, mode: str,
                      lean_project_dir: Path | None, lean_items: bool,
                      lean_worker_actions: bool, provider_url: str,
@@ -33,7 +36,9 @@ def _save_run_config(work_dir: Path, *, planner_model: str, worker_model: str,
     lines = [
         f'planner_model = "{planner_model}"',
         f'worker_model = "{worker_model}"',
-        f'max_steps = {max_steps}',
+        f'budget_mode = "{budget_mode}"',
+        f'budget_limit = {budget_limit}',
+        f'conclude_after = {conclude_after}',
         f'parallelism = {parallelism}',
         f'give_up_ratio = {give_up_ratio}',
         f'isolation = {str(isolation).lower()}',
@@ -225,12 +230,15 @@ def _cmd_prove():
     parser.add_argument("--planner-model", choices=model_choices, default=None, help="Override model for planner (defaults to --model)")
     parser.add_argument("--worker-model", choices=model_choices, default=None, help="Override model for worker (defaults to --model)")
     parser.add_argument("--provider-url", default="http://localhost:8000", help="Server URL for local models (default: http://localhost:8000)")
-    parser.add_argument("--max-steps", type=int, default=50, help="Maximum number of proving steps (default: 50)")
+    budget_group = parser.add_mutually_exclusive_group()
+    budget_group.add_argument("--max-tokens", type=int, default=None, metavar="N", help="Output token budget (mutually exclusive with --max-time)")
+    budget_group.add_argument("--max-time", type=str, default=None, metavar="DURATION", help="Wall-clock time budget, e.g. '30m', '2h' (default: 1h)")
+    parser.add_argument("--conclude-after", type=float, default=0.99, metavar="RATIO", help="Fraction of budget that triggers conclusion (0.9-1.0, default: 0.99)")
     parser.add_argument("--autonomous", action="store_true", help="Start in autonomous mode (default: interactive)")
     parser.add_argument("--read-only", action="store_true", help="Inspect run without resuming")
     parser.add_argument("--isolation", action=argparse.BooleanOptionalAction, default=True, help="Disable web searches (no literature_search action)")
     parser.add_argument("-P", "--parallelism", type=int, default=1, help="Max parallel workers per spawn step (default: 1)")
-    parser.add_argument("--give-up-after", type=float, default=0.5, metavar="RATIO", help="Fraction of steps before give_up action is allowed (default: 0.5)")
+    parser.add_argument("--give-up-after", type=float, default=0.5, metavar="RATIO", help="Fraction of budget before give_up action is allowed (default: 0.5)")
     parser.add_argument("--answer-reserve", type=int, default=4096, metavar="TOKENS", help="Tokens reserved for answer after thinking (default: 4096)")
     parser.add_argument("--history-budget", type=int, default=0, metavar="CHARS", help="Char budget for planner history (default: auto from model context)")
     parser.add_argument("--headless", action="store_true", help="Non-interactive mode (logs to stdout, errors to stderr)")
@@ -290,8 +298,13 @@ def _cmd_prove():
                 args.planner_model = saved.get("planner_model")
             if not args.worker_model:
                 args.worker_model = saved.get("worker_model")
-            if not _cli_flag_given("--max-steps"):
-                args.max_steps = saved.get("max_steps", args.max_steps)
+            if not _cli_flag_given("--max-tokens", "--max-time"):
+                args.max_tokens = saved.get("budget_limit") if saved.get("budget_mode") == "tokens" else None
+                args.max_time = None
+                args._saved_budget_mode = saved.get("budget_mode", "time")
+                args._saved_budget_limit = saved.get("budget_limit", 3600)
+            if not _cli_flag_given("--conclude-after"):
+                args.conclude_after = saved.get("conclude_after", args.conclude_after)
             if not _cli_flag_given("-P", "--parallelism"):
                 args.parallelism = saved.get("parallelism", args.parallelism)
             if not _cli_flag_given("--give-up-after"):
@@ -386,6 +399,28 @@ def _cmd_prove():
 
     model_label = planner_model if planner_model == worker_model else f"{planner_model}/{worker_model}"
 
+    # ── Resolve budget ──────────────────────────────────────────
+    if not (0.9 <= args.conclude_after <= 1.0):
+        parser.error("--conclude-after must be between 0.9 and 1.0")
+
+    if args.max_tokens is not None:
+        budget_mode, budget_limit = "tokens", args.max_tokens
+    elif args.max_time is not None:
+        budget_mode, budget_limit = "time", parse_duration(args.max_time)
+    elif hasattr(args, '_saved_budget_mode'):
+        # Resumed without explicit budget flags — use saved config
+        budget_mode = args._saved_budget_mode
+        budget_limit = args._saved_budget_limit
+    else:
+        budget_mode, budget_limit = "time", parse_duration("1h")
+
+    budget = Budget(
+        mode=budget_mode,
+        limit=budget_limit,
+        conclude_after=args.conclude_after,
+        give_up_after=args.give_up_after,
+    )
+
     # Save config on fresh start
     if not resuming:
         work_dir.mkdir(parents=True, exist_ok=True)
@@ -393,7 +428,9 @@ def _cmd_prove():
             work_dir,
             planner_model=planner_model,
             worker_model=worker_model,
-            max_steps=args.max_steps,
+            budget_mode=budget_mode,
+            budget_limit=budget_limit,
+            conclude_after=args.conclude_after,
             parallelism=args.parallelism,
             give_up_ratio=args.give_up_after,
             isolation=args.isolation,
@@ -413,13 +450,12 @@ def _cmd_prove():
         mode=mode,
         make_llm=make_planner_llm,
         model_name=model_label,
-        max_steps=args.max_steps,
+        budget=budget,
         autonomous=args.autonomous,
         verbose=args.verbose,
         tui=tui,
         isolation=args.isolation,
         parallelism=args.parallelism,
-        give_up_ratio=args.give_up_after,
         lean_project_dir=args.lean_project,
         lean_theorem_text=lean_theorem_text,
         proof_md_text=proof_md_text,
@@ -471,7 +507,9 @@ def _cmd_prove():
         tui.cleanup()
         has_proof = ((prover.work_dir / "PROOF.md").exists()
                      or (prover.work_dir / "PROOF.lean").exists())
-        print(f"  {calls} calls · ${cost:.4f}")
+        from .budget import _fmt_tokens
+        tok_str = _fmt_tokens(prover.budget.total_output_tokens)
+        print(f"  {calls} calls · ${cost:.4f} · {tok_str} output tokens")
         if (prover.work_dir / "PROOF.md").exists():
             print(f"  PROOF.md  → {prover.work_dir / 'PROOF.md'}")
         if (prover.work_dir / "PROOF.lean").exists():

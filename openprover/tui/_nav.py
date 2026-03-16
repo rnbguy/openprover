@@ -150,10 +150,11 @@ class NavMixin:
         start = max(end - visible, 0)
         target_start, target_end = sel
 
-        if target_start >= start:
-            pass  # Top of selection is visible, don't scroll
-        else:
-            # Scroll so target_start aligns with top of screen
+        if target_end >= end:
+            # Selection is below viewport — scroll so target_end is at bottom
+            tab.scroll_offset = max(total - target_end - 1, 0)
+        elif target_start < start:
+            # Selection is above viewport — scroll so target_start is at top
             new_end = min(total, target_start + visible)
             tab.scroll_offset = max(total - new_end, 0)
 

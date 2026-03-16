@@ -182,6 +182,24 @@ class LLMClient:
         # Check for structured output failures
         subtype = raw.get("subtype", "")
         if "error" in subtype:
+            # Token limit exceeded — return partial content with "length" finish
+            err = raw.get("result", "") or subtype
+            if "exceeded" in err and "token" in err:
+                result_text = raw.get("result", "")
+                duration = raw.get("duration_ms", elapsed_ms)
+                self._archive(call_num, label, prompt, system_prompt,
+                              json_schema, raw, None, elapsed_ms, archive_path,
+                              result_text=result_text)
+                logger.warning("[%s] output token limit hit after %dms",
+                               label, elapsed_ms)
+                return {
+                    "result": result_text,
+                    "thinking": "",
+                    "cost": cost,
+                    "duration_ms": duration,
+                    "raw": raw,
+                    "finish_reason": "length",
+                }
             self._archive(call_num, label, prompt, system_prompt, json_schema,
                           raw, subtype, elapsed_ms, archive_path)
             raise RuntimeError(f"Claude CLI error: {subtype}")
@@ -405,6 +423,27 @@ class LLMClient:
         subtype = result_data.get("subtype", "")
         if result_data.get("is_error") or "error" in subtype:
             err = result_data.get("result", "") or subtype or "streaming error"
+            # Token limit exceeded — return partial streamed content instead of crashing
+            if "exceeded" in err and "token" in err and result_parts:
+                partial_text = "".join(result_parts)
+                thinking_text = "".join(thinking_parts)
+                cost = result_data.get("total_cost_usd", 0.0)
+                self.total_cost += cost
+                self._archive(call_num, label, prompt, system_prompt,
+                              json_schema, result_data, None, elapsed_ms,
+                              archive_path, thinking=thinking_text,
+                              result_text=partial_text)
+                logger.warning("[%s] output token limit hit after %dms, "
+                               "returning partial output (%d chars)",
+                               label, elapsed_ms, len(partial_text))
+                return {
+                    "result": partial_text,
+                    "thinking": thinking_text,
+                    "cost": cost,
+                    "duration_ms": elapsed_ms,
+                    "raw": result_data,
+                    "finish_reason": "length",
+                }
             self._archive(call_num, label, prompt, system_prompt, json_schema,
                           result_data, err, elapsed_ms, archive_path)
             raise RuntimeError(f"Claude CLI streaming error: {err[:500]}")

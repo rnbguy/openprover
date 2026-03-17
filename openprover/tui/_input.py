@@ -142,9 +142,9 @@ class InputMixin:
     def _process_key(self, ch: str):
         if ch == 'r':
             self._toggle_trace()
-        elif ch == 'i':
+        elif ch == 'd':
             if self.active_tab_idx > 0:
-                self._toggle_view("input")
+                self._toggle_view("detail")
         elif ch == 'w':
             if self.active_tab_idx == 0:
                 if self.view == "main":
@@ -675,6 +675,6 @@ class InputMixin:
             self.view = "main"
         else:
             self.view = target
-            if target == "input":
+            if target == "detail":
                 self._input_scroll = 0
         self._redraw()

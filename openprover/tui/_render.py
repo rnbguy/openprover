@@ -48,10 +48,10 @@ class RenderMixin:
         auto_style = BOLD if self.autonomous else DIM
         trace_style = BOLD if self.trace_visible else DIM
         if self.active_tab_idx > 0:
-            input_style = BOLD if self.view == "input" else DIM
+            detail_style = BOLD if self.view == "detail" else DIM
             hints_styled = (f'{help_style}? help{RESET} {DIM}·{RESET} '
                             f'{trace_style}r reasoning{RESET} {DIM}·{RESET} '
-                            f'{input_style}i input{RESET} {DIM}·{RESET} '
+                            f'{detail_style}d detail{RESET} {DIM}·{RESET} '
                             f'{auto_style}a autonomous{RESET}')
         else:
             if self.view == "whiteboard":
@@ -257,6 +257,23 @@ class RenderMixin:
             desc.splitlines() if desc else ["(no task description)"],
             color=CYAN,
         )
+
+        if tab.done:
+            output_lines: list[str] = []
+            for entry in tab.log_lines:
+                if entry.is_trace:
+                    if self.trace_visible:
+                        for tline in entry.text.splitlines():
+                            output_lines.append(f'{DIM}{tline}{RESET}')
+                elif entry.is_output:
+                    for tline in entry.text.splitlines():
+                        output_lines.append(tline)
+            add_input_section(
+                "Output",
+                output_lines if output_lines else ["(no output)"],
+                color=GREEN,
+            )
+
         return sections
 
     def _step_detail_avail_rows(self) -> int:
@@ -566,13 +583,13 @@ class RenderMixin:
                             parts.append(f'↓ {below} below')
                         indicator = f' {DIM}{" · ".join(parts)}{RESET}'
                         self._write_raw(f'\033[{self.rows};1H\033[2K{indicator}')
-                elif self.view == "input":
+                elif self.view == "detail":
                     tab = self._active_tab
                     status_badge = (
                         f"{GREEN}● completed{RESET}" if tab.done
                         else f"{CYAN}● running{RESET}"
                     )
-                    self._write_raw(f'  {BOLD}Worker Input{RESET}  {status_badge} {DIM}(esc to return){RESET}\n')
+                    self._write_raw(f'  {BOLD}Worker Detail{RESET}  {status_badge} {DIM}(esc to return){RESET}\n')
                     self._write_raw(f'  {DIM}{"─" * 40}{RESET}\n')
                     lines = self._build_input_lines()
                     avail = self._input_avail_rows()

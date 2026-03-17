@@ -193,7 +193,7 @@ class NavMixin:
             self._step_detail_scroll = max(self._step_detail_scroll - page, 0)
             self._redraw()
             return
-        if self.view == "input":
+        if self.view == "detail":
             page = max(self._input_avail_rows() - 1, 1)
             self._input_scroll = max(self._input_scroll - page, 0)
             self._redraw()
@@ -220,7 +220,7 @@ class NavMixin:
             self._step_detail_scroll = min(self._step_detail_scroll + page, max_scroll)
             self._redraw()
             return
-        if self.view == "input":
+        if self.view == "detail":
             page = max(self._input_avail_rows() - 1, 1)
             max_scroll = self._input_max_scroll()
             self._input_scroll = min(self._input_scroll + page, max_scroll)
@@ -242,7 +242,7 @@ class NavMixin:
             self._step_detail_scroll = max(self._step_detail_scroll - n, 0)
             self._redraw()
             return
-        if self.view == "input":
+        if self.view == "detail":
             self._input_scroll = max(self._input_scroll - n, 0)
             self._redraw()
             return
@@ -264,7 +264,7 @@ class NavMixin:
             self._step_detail_scroll = min(self._step_detail_scroll + n, max_scroll)
             self._redraw()
             return
-        if self.view == "input":
+        if self.view == "detail":
             max_scroll = self._input_max_scroll()
             self._input_scroll = min(self._input_scroll + n, max_scroll)
             self._redraw()

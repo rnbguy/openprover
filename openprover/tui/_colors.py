@@ -44,7 +44,7 @@ HELP_TEXT = f"""\
 
   {DIM}Instant keys (work any time):{RESET}
     r           toggle reasoning
-    i           show worker input (on worker tabs)
+    d           show worker detail (on worker tabs)
     w           cycle whiteboard (split \u2192 full \u2192 off)
     a           toggle autonomous mode
     {DIM}\u2190/\u2192{RESET}         switch tabs

@@ -599,7 +599,11 @@ class StepsMixin:
                     add_section(f"{slug}{ext}", [f"{DIM}(delete){RESET}"], color=RED)
 
         if action_output and action != "spawn":
-            add_section("Action Output", action_output.splitlines(), color=MAGENTA)
+            output_title = {
+                "read_theorem": "Theorem Content",
+                "read_items": "Items Content",
+            }.get(action, "Action Output")
+            add_section(output_title, action_output.splitlines(), color=MAGENTA)
 
         self._step_detail_text = "\n".join(parts) if parts else "  (no detail)"
         self._step_detail_scroll = min(

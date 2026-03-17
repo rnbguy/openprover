@@ -1146,7 +1146,9 @@ class Prover:
             desc = task.get("description", "")
             task_summary = task.get("summary", "").strip()
             label = f"Worker {i}"
-            self.tui.add_worker_tab(wid, label, task_description=desc)
+            tab = self.tui.add_worker_tab(wid, label, task_description=desc)
+            if tab is not None:
+                tab.task_summary = task_summary
             worker_ids.append(wid)
 
         # Snapshot tabs early so step detail can show running status
@@ -1960,6 +1962,22 @@ class Prover:
             step_idx = self.tui.step_complete(step_num, action, summary)
             if action == "write_items":
                 self.tui.step_entries[step_idx]["write_items"] = plan.get("items", [])
+            if action == "read_theorem":
+                # Reconstruct the theorem content that was read
+                parts = [f"## THEOREM.md\n\n{self.theorem_text}"]
+                if self.lean_theorem_text:
+                    parts.append(
+                        f"\n\n## THEOREM.lean\n\n```lean\n{self.lean_theorem_text}\n```"
+                    )
+                proof_md = self.work_dir / "PROOF.md"
+                if proof_md.exists():
+                    parts.append(f"\n\n## PROOF.md\n\n{proof_md.read_text()}")
+                proof_lean = self.work_dir / "PROOF.lean"
+                if proof_lean.exists():
+                    parts.append(
+                        f"\n\n## PROOF.lean\n\n```lean\n{proof_lean.read_text()}\n```"
+                    )
+                self.tui.append_step_action_output(step_num, "\n".join(parts))
             status = meta.get("status", "")
             feedback = meta.get("feedback", "")
             detail = ""
@@ -1988,6 +2006,7 @@ class Prover:
                 continue
 
             task_files = sorted(workers_dir.glob("task_*.md"))
+            plan_tasks = plan.get("tasks") or []
             verdicts: dict[int, str] = {}
             for task_file in task_files:
                 tidx = task_file.stem.removeprefix("task_")
@@ -2002,7 +2021,12 @@ class Prover:
                     tab_id = f"worker_{step_num}_{tidx}"
                     label = f"Worker {tidx}"
 
-                self.tui.add_worker_tab(tab_id, label, task_description=desc)
+                wtab = self.tui.add_worker_tab(tab_id, label, task_description=desc)
+                if wtab is not None:
+                    try:
+                        wtab.task_summary = plan_tasks[int(tidx)].get("summary", "")
+                    except (IndexError, ValueError):
+                        pass
                 if result:
                     self.tui.worker_output(tab_id, result)
                 self.tui.mark_worker_done(tab_id)

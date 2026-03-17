@@ -250,7 +250,11 @@ class RenderMixin:
             for line in lines:
                 sections.append(f"  {line}" if line else "")
 
-        add_input_section("Worker", [tab.label], color=MAGENTA)
+        summary_line = (tab.task_summary or "").strip()
+        label_parts = [tab.label]
+        if summary_line:
+            label_parts.append(f"{DIM}— {summary_line}{RESET}")
+        add_input_section("Worker", label_parts, color=MAGENTA)
 
         is_verifier = bool(tab.worker_task or tab.worker_output)
 

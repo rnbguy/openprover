@@ -21,7 +21,7 @@ class _Tab:
                  "spinner_start", "spinner_tokens", "last_trace", "last_output",
                  "toml_pending", "toml_close_tag", "output_non_toml_seen",
                  "output_toml_seen", "is_waiting",
-                 "done", "task_description",
+                 "done", "task_description", "task_summary",
                  "worker_task", "worker_output",
                  "entries", "nav_idx",
                  "pending_actions")
@@ -49,6 +49,7 @@ class _Tab:
         self.is_waiting = False
         self.done = False
         self.task_description = task_description
+        self.task_summary = ""     # short summary from spawn action
         self.worker_task = ""      # for verifier tabs: the original worker's task
         self.worker_output = ""    # for verifier tabs: the worker's output being verified
         # Navigable entries (action entries for worker tabs)

@@ -290,7 +290,8 @@ class Prover:
             return None
         return lambda t, k="text": self.tui.stream_text(t, kind=k, tab=tab)
 
-    def run(self):
+    def _setup_tui(self, *, autonomous: bool = False):
+        """Initialize TUI with common state for both run() and inspect()."""
         self.tui.setup(
             theorem_name=self.theorem_name,
             work_dir=str(self.work_dir),
@@ -298,8 +299,7 @@ class Prover:
             model_name=self.model,
         )
         self.tui._budget_ref = self.budget
-        self._setup_tui_logging()
-        self.tui.autonomous = self.autonomous
+        self.tui.autonomous = autonomous
         self.tui.whiteboard = self.whiteboard
         self.tui.run_params = {
             "model": self.model,
@@ -310,6 +310,10 @@ class Prover:
             "isolation": "on" if self.isolation else "off",
             "mode": self.mode,
         }
+
+    def run(self):
+        self._setup_tui(autonomous=self.autonomous)
+        self._setup_tui_logging()
 
         if self.resumed:
             self._load_history()
@@ -351,7 +355,10 @@ class Prover:
     def _push_output(self, text: str):
         """Store action output for the current step's history entry."""
         if text:
-            self._current_action_output = text
+            if self._current_action_output:
+                self._current_action_output += "\n\n" + text
+            else:
+                self._current_action_output = text
             self.tui.append_step_action_output(self.step_num, text)
 
     def _save_step_history(self):
@@ -656,21 +663,18 @@ class Prover:
         normally (there should be at most one such action per batch).
         """
         deferred_result = None
+        last_action = ""
         for plan in plans:
             action = plan["action"]
-            summary = plan.get("summary", "")
+            last_action = action
 
             if action == "write_whiteboard":
-                self._save_step_meta(step_dir, status="ok", action=action, resp=resp)
                 self._handle_write_whiteboard(plan)
             elif action == "read_items":
-                self._save_step_meta(step_dir, status="ok", action=action, resp=resp)
                 self._handle_read_items(plan)
             elif action == "read_theorem":
-                self._save_step_meta(step_dir, status="ok", action=action, resp=resp)
                 self._handle_read_theorem()
             elif action == "write_items":
-                self._save_step_meta(step_dir, status="ok", action=action, resp=resp)
                 self.tui.step_entries[self._step_idx]["write_items"] = plan.get("items", [])
                 self._handle_write_items(plan, step_dir)
             elif action == "submit_proof":
@@ -683,6 +687,7 @@ class Prover:
                 self._save_step_meta(step_dir, status="ok", action=action, resp=resp)
                 deferred_result = self._handle_give_up()
             elif action == "spawn":
+                # spawn and literature_search save their own meta (include worker details)
                 deferred_result = self._handle_spawn(plan, step_dir, resp)
             elif action == "literature_search":
                 deferred_result = self._handle_literature_search(plan, step_dir, resp)
@@ -690,11 +695,14 @@ class Prover:
                 self.tui.log(f"Unknown action: {action}", color="red")
                 self._save_step_meta(step_dir, status="unknown_action", action=action,
                                      resp=resp, error=f"Unknown action: {action}")
+                return "continue"
 
             # If a terminal/blocking action returned a result, stop processing
             if deferred_result is not None:
                 return deferred_result
 
+        # Save metadata once for steps that didn't save their own (inline-only batches)
+        self._save_step_meta(step_dir, status="ok", action=last_action, resp=resp)
         return "continue"
 
     # ── Action handlers ──────────────────────────────────────
@@ -938,20 +946,19 @@ class Prover:
         self.tui.log("Stuck — no more ideas.", color="yellow")
         return "stop"
 
-    def _handle_read_items(self, plan: dict) -> str:
+    def _handle_read_items(self, plan: dict):
         slugs = plan.get("read", [])
         if not slugs:
             self.tui.log("read_items but no slugs specified", color="yellow")
-            return "continue"
+            return
         self._push_output(self.repo.read_items(slugs))
         self.tui.log(f"Read {len(slugs)} item(s): {', '.join(slugs)}", dim=True)
-        return "continue"
 
-    def _handle_write_items(self, plan: dict, step_dir: Path) -> str:
+    def _handle_write_items(self, plan: dict, step_dir: Path):
         items = plan.get("items", [])
         if not items:
             self.tui.log("write_items but no items specified", color="yellow")
-            return "continue"
+            return
 
         lean_feedback: list[str] = []
         lean_idx = 0
@@ -1009,9 +1016,8 @@ class Prover:
             self._push_output(
                 "## Lean Verification Results\n\n" + "\n\n".join(lean_feedback)
             )
-        return "continue"
 
-    def _handle_read_theorem(self) -> str:
+    def _handle_read_theorem(self):
         parts = [f"## THEOREM.md\n\n{self.theorem_text}"]
         if self.lean_theorem_text:
             parts.append(
@@ -1031,19 +1037,17 @@ class Prover:
             )
         self._push_output("\n".join(parts))
         self.tui.log("Read theorem content", color="yellow")
-        return "continue"
 
-    def _handle_write_whiteboard(self, plan: dict) -> str:
+    def _handle_write_whiteboard(self, plan: dict):
         wb = plan.get("whiteboard", "")
         if not wb:
             self.tui.log("write_whiteboard but no whiteboard content", color="yellow")
-            return "continue"
+            return
         self.whiteboard = wb
         (self.work_dir / "WHITEBOARD.md").write_text(self.whiteboard)
         self.tui.whiteboard = self.whiteboard
         self.tui.wb_scroll_offset = 0
         self.tui.log("Whiteboard updated", color="yellow")
-        return "continue"
 
     def _handle_spawn(self, plan: dict, step_dir: Path,
                       planner_resp: dict | None = None) -> str:
@@ -1135,55 +1139,7 @@ class Prover:
                 self.tui.log("Interrupted — switching to manual mode", color="yellow")
 
         # ── Verifier phase ──
-        non_interrupted = [
-            (i, t, w) for i, (t, w) in enumerate(zip(tasks, worker_resps))
-            if w and w.get("error") != "interrupted" and w.get("result")
-        ]
-        verifier_resps: dict[int, dict] = {}
-
-        if non_interrupted:
-            verifier_ids = []
-            for i, task, wresp in non_interrupted:
-                vid = f"verifier_{self.step_num}_{i}"
-                label = f"Verify {i}"
-                worker_out = wresp.get("result", "")
-                vdesc = f"Verifying Worker {i}\n\n--- Worker {i} Output ---\n{worker_out}"
-                self.tui.add_worker_tab(vid, label,
-                                        task_description=vdesc)
-                verifier_ids.append(vid)
-
-            self.tui.snapshot_worker_tabs(self.step_num)
-            vn = len(non_interrupted)
-            self.tui.set_waiting_status(f"verifying {vn} worker(s)")
-
-            with ThreadPoolExecutor(max_workers=vn) as pool:
-                vfutures: dict = {}
-                for j, (i, task, wresp) in enumerate(non_interrupted):
-                    desc = task.get("description", "")
-                    archive = workers_dir / f"verifier_{i}_call.json"
-                    future = pool.submit(
-                        self._run_verifier, desc, wresp["result"],
-                        verifier_ids[j], archive,
-                    )
-                    vfutures[future] = (j, i)
-
-                v_pending = set(vfutures.keys())
-                while v_pending:
-                    done_set, v_pending = wait(
-                        v_pending, timeout=0.5, return_when=FIRST_COMPLETED,
-                    )
-                    for future in done_set:
-                        j, i = vfutures[future]
-                        try:
-                            verifier_resps[i] = future.result()
-                        except Exception as e:
-                            verifier_resps[i] = {
-                                "result": f"Verifier error: {e}", "cost": 0.0,
-                                "duration_ms": 0, "raw": {}, "error": str(e),
-                            }
-                        self.tui.mark_worker_done(verifier_ids[j])
-
-            self.tui.set_waiting_status("")
+        verifier_resps = self._run_verifiers(tasks, worker_resps, workers_dir)
 
         # Save results and build prev_output
         parts = []
@@ -1336,83 +1292,96 @@ class Prover:
         use_tools = use_vllm_tools or use_mcp_tools
         system_prompt = prompts.worker_system_prompt(lean_worker_actions=use_tools)
 
+        if use_vllm_tools:
+            return self._run_worker_multi_turn(
+                prompt, system_prompt, worker_id, archive_path,
+            )
+        return self._run_worker_single_turn(
+            prompt, system_prompt, worker_id, archive_path,
+            use_mcp_tools=bool(use_mcp_tools),
+        )
+
+    def _run_worker_single_turn(self, prompt: str, system_prompt: str,
+                                worker_id: str, archive_path: Path | None,
+                                *, use_mcp_tools: bool = False) -> dict:
+        """Single-turn worker: Claude CLI (with or without MCP) or non-vLLM."""
         tool_calls_log: list[dict] = []
 
-        if not use_vllm_tools:
-            # Single-turn path: Claude CLI (with or without MCP) or non-vLLM
-            # When MCP is configured, Claude CLI handles tool calling internally.
-            def _tool_start_cb(name, tool_input):
-                logger.info("[%s] %s: starting", worker_id, name)
-                self.tui.start_worker_action(worker_id, name, tool_input)
+        def _tool_start_cb(name, tool_input):
+            logger.info("[%s] %s: starting", worker_id, name)
+            self.tui.start_worker_action(worker_id, name, tool_input)
 
-            def _tool_cb(name, tool_input, result, status, duration_ms=0):
-                logger.info("[%s] %s: %s (%dms)", worker_id, name, status, duration_ms)
-                tool_calls_log.append({
-                    "tool": name, "args": tool_input, "result": result,
-                    "status": status, "duration_ms": duration_ms,
-                })
-                self.tui.add_worker_action(worker_id, name, tool_input, result, status, duration_ms)
+        def _tool_cb(name, tool_input, result, status, duration_ms=0):
+            logger.info("[%s] %s: %s (%dms)", worker_id, name, status, duration_ms)
+            tool_calls_log.append({
+                "tool": name, "args": tool_input, "result": result,
+                "status": status, "duration_ms": duration_ms,
+            })
+            self.tui.add_worker_action(worker_id, name, tool_input, result, status, duration_ms)
 
-            self.tui.stream_start("working...", tab=worker_id)
-            try:
-                resp = self.worker_llm.call(
-                    prompt=prompt,
+        self.tui.stream_start("working...", tab=worker_id)
+        try:
+            resp = self.worker_llm.call(
+                prompt=prompt,
+                system_prompt=system_prompt,
+                label=worker_id,
+                stream_callback=self._stream_cb(worker_id),
+                archive_path=archive_path,
+                tool_callback=_tool_cb if use_mcp_tools else None,
+                tool_start_callback=_tool_start_cb if use_mcp_tools else None,
+            )
+            self.tui.stream_end(tab=worker_id)
+
+            # Phase 2 if truncated or soft-interrupted
+            if resp.get("finish_reason") in ("length", "max_tokens", "soft_interrupted"):
+                reason = resp["finish_reason"]
+                logger.info("[%s] %s — Phase 2", worker_id, reason)
+                if reason == "soft_interrupted":
+                    self.worker_llm.clear_soft_interrupt()
+                label = "interrupted — forcing output..." if reason == "soft_interrupted" else "forcing output..."
+                self.tui.stream_start(label, tab=worker_id)
+                answer_reserve = getattr(self.worker_llm, 'answer_reserve', 4096)
+                phase2_prompt = (
+                    f"{prompt}\n\n---\n\n"
+                    f"Your previous reasoning was cut off. Continue with your final answer.\n\n"
+                    f"Previous output (last 2000 chars):\n"
+                    f"```\n{resp['result'][-2000:]}\n```"
+                )
+                resp2 = self.worker_llm.call(
+                    prompt=phase2_prompt,
                     system_prompt=system_prompt,
-                    label=worker_id,
+                    label=f"{worker_id}_phase2",
                     stream_callback=self._stream_cb(worker_id),
-                    archive_path=archive_path,
-                    tool_callback=_tool_cb if use_mcp_tools else None,
-                    tool_start_callback=_tool_start_cb if use_mcp_tools else None,
+                    archive_path=archive_path.parent / f"{archive_path.stem}_phase2.json" if archive_path else None,
+                    max_tokens=answer_reserve,
                 )
                 self.tui.stream_end(tab=worker_id)
+                resp = {
+                    "result": resp2["result"],
+                    "thinking": resp["thinking"] + resp2.get("thinking", ""),
+                    "cost": resp["cost"] + resp2["cost"],
+                    "duration_ms": resp["duration_ms"] + resp2["duration_ms"],
+                    "raw": resp2["raw"],
+                    "finish_reason": resp2.get("finish_reason", "stop"),
+                }
 
-                # Phase 2 if truncated or soft-interrupted
-                if resp.get("finish_reason") in ("length", "max_tokens", "soft_interrupted"):
-                    reason = resp["finish_reason"]
-                    logger.info("[%s] %s — Phase 2", worker_id, reason)
-                    if reason == "soft_interrupted":
-                        self.worker_llm.clear_soft_interrupt()
-                    label = "interrupted — forcing output..." if reason == "soft_interrupted" else "forcing output..."
-                    self.tui.stream_start(label, tab=worker_id)
-                    answer_reserve = getattr(self.worker_llm, 'answer_reserve', 4096)
-                    phase2_prompt = (
-                        f"{prompt}\n\n---\n\n"
-                        f"Your previous reasoning was cut off. Continue with your final answer.\n\n"
-                        f"Previous output (last 2000 chars):\n"
-                        f"```\n{resp['result'][-2000:]}\n```"
-                    )
-                    resp2 = self.worker_llm.call(
-                        prompt=phase2_prompt,
-                        system_prompt=system_prompt,
-                        label=f"{worker_id}_phase2",
-                        stream_callback=self._stream_cb(worker_id),
-                        archive_path=archive_path.parent / f"{archive_path.stem}_phase2.json" if archive_path else None,
-                        max_tokens=answer_reserve,
-                    )
-                    self.tui.stream_end(tab=worker_id)
-                    resp = {
-                        "result": resp2["result"],
-                        "thinking": resp["thinking"] + resp2.get("thinking", ""),
-                        "cost": resp["cost"] + resp2["cost"],
-                        "duration_ms": resp["duration_ms"] + resp2["duration_ms"],
-                        "raw": resp2["raw"],
-                        "finish_reason": resp2.get("finish_reason", "stop"),
-                    }
+            resp["error"] = ""
+        except Interrupted:
+            self.tui.stream_end(tab=worker_id)
+            logger.info("[%s] interrupted", worker_id)
+            resp = {"result": "(terminated by user)", "cost": 0.0,
+                    "duration_ms": 0, "raw": {}, "error": "interrupted"}
+        except RuntimeError as e:
+            self.tui.stream_end(tab=worker_id)
+            resp = {"result": f"Worker error: {e}", "cost": 0.0,
+                    "duration_ms": 0, "raw": {}, "error": str(e)}
+        resp["tool_calls_log"] = tool_calls_log
+        return resp
 
-                resp["error"] = ""
-            except Interrupted:
-                self.tui.stream_end(tab=worker_id)
-                logger.info("[%s] interrupted", worker_id)
-                resp = {"result": "(terminated by user)", "cost": 0.0,
-                        "duration_ms": 0, "raw": {}, "error": "interrupted"}
-            except RuntimeError as e:
-                self.tui.stream_end(tab=worker_id)
-                resp = {"result": f"Worker error: {e}", "cost": 0.0,
-                        "duration_ms": 0, "raw": {}, "error": str(e)}
-            resp["tool_calls_log"] = tool_calls_log
-            return resp
-
-        # Multi-turn tool-calling path (vLLM)
+    def _run_worker_multi_turn(self, prompt: str, system_prompt: str,
+                               worker_id: str, archive_path: Path | None) -> dict:
+        """Multi-turn tool-calling worker (vLLM)."""
+        tool_calls_log: list[dict] = []
         messages = [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": prompt},
@@ -1544,6 +1513,60 @@ class Prover:
 
         result["tool_calls_log"] = tool_calls_log
         return result
+
+    def _run_verifiers(self, tasks: list[dict], worker_resps: list[dict | None],
+                       workers_dir: Path) -> dict[int, dict]:
+        """Run independent verifiers for all non-interrupted workers. Returns {worker_idx: resp}."""
+        non_interrupted = [
+            (i, t, w) for i, (t, w) in enumerate(zip(tasks, worker_resps))
+            if w and w.get("error") != "interrupted" and w.get("result")
+        ]
+        verifier_resps: dict[int, dict] = {}
+        if not non_interrupted:
+            return verifier_resps
+
+        verifier_ids = []
+        for i, task, wresp in non_interrupted:
+            vid = f"verifier_{self.step_num}_{i}"
+            label = f"Verify {i}"
+            worker_out = wresp.get("result", "")
+            vdesc = f"Verifying Worker {i}\n\n--- Worker {i} Output ---\n{worker_out}"
+            self.tui.add_worker_tab(vid, label, task_description=vdesc)
+            verifier_ids.append(vid)
+
+        self.tui.snapshot_worker_tabs(self.step_num)
+        vn = len(non_interrupted)
+        self.tui.set_waiting_status(f"verifying {vn} worker(s)")
+
+        with ThreadPoolExecutor(max_workers=vn) as pool:
+            vfutures: dict = {}
+            for j, (i, task, wresp) in enumerate(non_interrupted):
+                desc = task.get("description", "")
+                archive = workers_dir / f"verifier_{i}_call.json"
+                future = pool.submit(
+                    self._run_verifier, desc, wresp["result"],
+                    verifier_ids[j], archive,
+                )
+                vfutures[future] = (j, i)
+
+            v_pending = set(vfutures.keys())
+            while v_pending:
+                done_set, v_pending = wait(
+                    v_pending, timeout=0.5, return_when=FIRST_COMPLETED,
+                )
+                for future in done_set:
+                    j, i = vfutures[future]
+                    try:
+                        verifier_resps[i] = future.result()
+                    except Exception as e:
+                        verifier_resps[i] = {
+                            "result": f"Verifier error: {e}", "cost": 0.0,
+                            "duration_ms": 0, "raw": {}, "error": str(e),
+                        }
+                    self.tui.mark_worker_done(verifier_ids[j])
+
+        self.tui.set_waiting_status("")
+        return verifier_resps
 
     def _run_verifier(self, task_desc: str, worker_output: str,
                       verifier_id: str, archive_path: Path | None = None) -> dict:
@@ -1753,25 +1776,7 @@ class Prover:
 
     def inspect(self):
         """Enter inspect mode — browse historical run data without running steps."""
-        self.tui.setup(
-            theorem_name=self.theorem_name,
-            work_dir=str(self.work_dir),
-            step_num=self.step_num,
-            model_name=self.model,
-        )
-        self.tui._budget_ref = self.budget
-        self.tui.autonomous = False
-        self.tui.whiteboard = self.whiteboard
-        self.tui.run_params = {
-            "model": self.model,
-            "budget": self.budget.limit_str(),
-            "conclude_after": f"{self.budget.conclude_after:.0%}",
-            "give_up_after": f"{self.budget.give_up_after:.0%}",
-            "parallelism": str(self.parallelism),
-            "isolation": "on" if self.isolation else "off",
-            "mode": self.mode,
-        }
-
+        self._setup_tui(autonomous=False)
         self._load_history()
 
         # Show result status

@@ -745,10 +745,16 @@ class Prover:
         """Execute a list of parsed action plans sequentially.
 
         Low-impact actions (write_whiteboard, read_items, read_theorem, write_items)
-        are executed inline. spawn/literature_search/submit/give_up are dispatched
-        normally (there should be at most one such action per batch).
+        are executed inline. Heavy actions (spawn, literature_search, submit, give_up)
+        run their own logic and may save step metadata themselves.
+
+        Processing stops early only when an action returns "stop" (session
+        complete).  Non-terminal heavy actions (e.g. submit_proof that returns
+        "continue" in prove_and_formalize mode) do NOT block subsequent actions
+        in the same batch, so a planner can combine e.g. submit_proof + spawn.
         """
-        deferred_result = None
+        result = "continue"
+        meta_saved = False
         last_action = ""
         for plan in plans:
             action = plan["action"]
@@ -764,31 +770,32 @@ class Prover:
                 self.tui.step_entries[self._step_idx]["write_items"] = plan.get("items", [])
                 self._handle_write_items(plan, step_dir)
             elif action == "submit_proof":
-                self._save_step_meta(step_dir, status="ok", action=action, resp=resp)
-                deferred_result = self._handle_submit_proof(plan, step_dir)
+                result = self._handle_submit_proof(plan, step_dir)
             elif action == "submit_lean_proof":
-                self._save_step_meta(step_dir, status="ok", action=action, resp=resp)
-                deferred_result = self._handle_submit_lean_proof(plan, step_dir)
+                result = self._handle_submit_lean_proof(plan, step_dir)
             elif action == "give_up":
-                self._save_step_meta(step_dir, status="ok", action=action, resp=resp)
-                deferred_result = self._handle_give_up()
+                result = self._handle_give_up()
             elif action == "spawn":
                 # spawn and literature_search save their own meta (include worker details)
-                deferred_result = self._handle_spawn(plan, step_dir, resp)
+                result = self._handle_spawn(plan, step_dir, resp)
+                meta_saved = True
             elif action == "literature_search":
-                deferred_result = self._handle_literature_search(plan, step_dir, resp)
+                result = self._handle_literature_search(plan, step_dir, resp)
+                meta_saved = True
             else:
                 self.tui.log(f"Unknown action: {action}", color="red")
                 self._save_step_meta(step_dir, status="unknown_action", action=action,
                                      resp=resp, error=f"Unknown action: {action}")
                 return "continue"
 
-            # If a terminal/blocking action returned a result, stop processing
-            if deferred_result is not None:
-                return deferred_result
+            # Stop immediately when the session is complete
+            if result == "stop":
+                self._save_step_meta(step_dir, status="ok", action=action, resp=resp)
+                return "stop"
 
-        # Save metadata once for steps that didn't save their own (inline-only batches)
-        self._save_step_meta(step_dir, status="ok", action=last_action, resp=resp)
+        # Save metadata once for steps where no heavy action saved it already
+        if not meta_saved:
+            self._save_step_meta(step_dir, status="ok", action=last_action, resp=resp)
         return "continue"
 
     # ── Action handlers ──────────────────────────────────────
@@ -1077,11 +1084,28 @@ class Prover:
                 (lean_dir / f"cmd_{lean_idx}_{flat_slug}.txt").write_text(cmd_info)
                 lean_idx += 1
 
+                # Distinguish real errors from warnings-only
+                if not success and feedback:
+                    has_error = any(": error" in line for line in feedback.splitlines())
+                    if not has_error and "sorry" not in feedback.lower():
+                        # Warnings only, no errors — treat as success
+                        success = True
+
                 if success:
                     self.repo.write_item(slug, content, fmt="lean")
-                    self.tui.log(f"Wrote [[{slug}]] (lean, verified OK)", color="green")
-                    logger.info("Lean item [[%s]] verified OK", slug)
-                    lean_feedback.append(f"[[{slug}]]: Lean verification PASSED")
+                    if feedback:
+                        self.tui.log(f"Wrote [[{slug}]] (lean, warnings only)",
+                                     color="green")
+                        logger.info("Lean item [[%s]] verified with warnings", slug)
+                        lean_feedback.append(
+                            f"[[{slug}]]: Lean verification PASSED (with warnings)"
+                            f"\n```\n{feedback}\n```"
+                        )
+                    else:
+                        self.tui.log(f"Wrote [[{slug}]] (lean, verified OK)",
+                                     color="green")
+                        logger.info("Lean item [[%s]] verified OK", slug)
+                        lean_feedback.append(f"[[{slug}]]: Lean verification PASSED")
                 else:
                     self.tui.log(f"[[{slug}]] lean verification failed — not saved",
                                  color="yellow")

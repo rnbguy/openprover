@@ -408,6 +408,9 @@ def worker_system_prompt(*, lean_worker_actions: bool = False) -> str:
     base = (
         "You are a research mathematician working on a specific task.\n"
         "\n"
+        "Think carefully before writing your answer. Explore the problem, consider edge cases, "
+        "and work through the reasoning step by step before stating conclusions.\n"
+        "\n"
         "Complete the task thoroughly and report your findings. "
         "If you get stuck, return what you have so far - partial progress is valuable. "
         "Clearly state what you found, where you got stuck, and what remains open. "

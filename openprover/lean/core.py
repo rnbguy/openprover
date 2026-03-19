@@ -157,6 +157,13 @@ def merge_lean_imports(existing: str, new_snippet: str) -> str:
         else:
             body_new.append(line)
 
+    # Ensure two blank lines before the new block
+    if body_existing and body_new:
+        # Strip trailing blank lines from existing, then add two
+        while body_existing and body_existing[-1].strip() == '':
+            body_existing.pop()
+        body_existing.append('')
+        body_existing.append('')
     return '\n'.join(import_lines + body_existing + body_new)
 
 

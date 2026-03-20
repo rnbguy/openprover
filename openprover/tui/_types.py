@@ -37,7 +37,7 @@ class _Tab:
         # each element is (kind, chunks) where kind is "thinking" or "text"
         self.stream_segments: list[tuple[str, list[str]]] = []
         self.scroll_offset = 0
-        self.view = "whiteboard_split"
+        self.view = "main"
         self.streaming = False
         self.spinner_label = ""
         self.spinner_tick = 0

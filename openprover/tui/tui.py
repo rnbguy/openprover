@@ -70,6 +70,7 @@ class TUI(TextMixin, StreamMixin, NavMixin, TabsMixin, StepsMixin,
         self._buf: list[str] | None = None
         # Tabs
         self.tabs: list[_Tab] = [_Tab("planner", "Planner"), _Tab("logs", "Logs")]
+        self.tabs[0].view = "whiteboard_split"  # planner tab shows whiteboard by default
         self.active_tab_idx = 0
         # Saved worker tabs (when navigating history)
         self._saved_worker_tabs: list[_Tab] | None = None

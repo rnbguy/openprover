@@ -50,6 +50,7 @@ class StreamMixin:
             return
         target.trace_buf = []
         target.output_buf = []
+        target.stream_segments = []
         target.toml_pending = ""
         target.toml_close_tag = ""
         target.output_non_toml_seen = False
@@ -97,6 +98,11 @@ class StreamMixin:
 
         if is_thinking:
             target.trace_buf.append(text)
+            # Track interleaved order
+            if target.stream_segments and target.stream_segments[-1][0] == "thinking":
+                target.stream_segments[-1][1].append(text)
+            else:
+                target.stream_segments.append(("thinking", [text]))
         else:
             # Update spinner label when transitioning from thinking to action
             if (not self.trace_visible
@@ -104,6 +110,11 @@ class StreamMixin:
                     and not target.output_buf):
                 target.spinner_label = "crafting action"
             target.output_buf.append(text)
+            # Track interleaved order
+            if target.stream_segments and target.stream_segments[-1][0] == "text":
+                target.stream_segments[-1][1].append(text)
+            else:
+                target.stream_segments.append(("text", [text]))
             output_segments = self._split_toml_stream_segments(target, text)
             for is_toml, seg in output_segments:
                 if not seg:
@@ -163,24 +174,25 @@ class StreamMixin:
         target.is_waiting = False
         target.spinner_label = ""
 
-        if target.trace_buf:
-            target.last_trace = "".join(target.trace_buf)
-            target.log_lines.append(_LogEntry(target.last_trace, is_trace=True))
-        else:
-            target.last_trace = ""
+        target.last_trace = "".join(target.trace_buf) if target.trace_buf else ""
+        target.last_output = "".join(target.output_buf) if target.output_buf else ""
 
-        if target.output_buf:
-            target.last_output = "".join(target.output_buf)
-            target.log_lines.append(
-                _LogEntry(target.last_output, is_output=True))
-        else:
-            target.last_output = ""
+        # Bake segments in interleaved order to preserve think/output ordering
+        for seg_kind, seg_chunks in target.stream_segments:
+            joined = "".join(seg_chunks)
+            if not joined:
+                continue
+            if seg_kind == "thinking":
+                target.log_lines.append(_LogEntry(joined, is_trace=True))
+            else:
+                target.log_lines.append(_LogEntry(joined, is_output=True))
 
         if len(target.log_lines) > 500:
             target.log_lines = target.log_lines[-500:]
 
         target.trace_buf = []
         target.output_buf = []
+        target.stream_segments = []
 
         is_active = target is self._active_tab
         had_visible = ((target.last_trace and self.trace_visible)

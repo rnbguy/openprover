@@ -16,6 +16,7 @@ class _LogEntry:
 class _Tab:
     """A tab with its own log buffer and streaming state."""
     __slots__ = ("id", "label", "log_lines", "trace_buf", "output_buf",
+                 "stream_segments",
                  "scroll_offset", "view",
                  "streaming", "spinner_label", "spinner_tick", "spinner_time",
                  "spinner_start", "spinner_tokens", "last_trace", "last_output",
@@ -32,6 +33,9 @@ class _Tab:
         self.log_lines: list[_LogEntry] = []
         self.trace_buf: list[str] = []
         self.output_buf: list[str] = []
+        # Ordered segments preserving think/output interleaving:
+        # each element is (kind, chunks) where kind is "thinking" or "text"
+        self.stream_segments: list[tuple[str, list[str]]] = []
         self.scroll_offset = 0
         self.view = "whiteboard_split"
         self.streaming = False

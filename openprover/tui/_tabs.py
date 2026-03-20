@@ -44,6 +44,7 @@ class TabsMixin:
             # visibility flags so redraws keep showing this spinner.
             planner.trace_buf = []
             planner.output_buf = []
+            planner.stream_segments = []
             planner.output_non_toml_seen = False
             planner.output_toml_seen = False
             planner.spinner_label = text
@@ -93,14 +94,17 @@ class TabsMixin:
         # Bake any accumulated streaming content into log_lines so the action
         # entry appears AFTER the text that preceded it (correct ordering).
         if tab.streaming and (tab.trace_buf or tab.output_buf):
-            if tab.trace_buf:
-                tab.log_lines.append(
-                    _LogEntry("".join(tab.trace_buf), is_trace=True))
-                tab.trace_buf = []
-            if tab.output_buf:
-                tab.log_lines.append(
-                    _LogEntry("".join(tab.output_buf), is_output=True))
-                tab.output_buf = []
+            for seg_kind, seg_chunks in tab.stream_segments:
+                joined = "".join(seg_chunks)
+                if not joined:
+                    continue
+                if seg_kind == "thinking":
+                    tab.log_lines.append(_LogEntry(joined, is_trace=True))
+                else:
+                    tab.log_lines.append(_LogEntry(joined, is_output=True))
+            tab.trace_buf = []
+            tab.output_buf = []
+            tab.stream_segments = []
             tab.output_non_toml_seen = False
             tab.output_toml_seen = False
             if len(tab.log_lines) > 500:

@@ -196,29 +196,33 @@ class RenderMixin:
                         lines.append(f' {GREEN}▎{RESET}{wrapped}')
                 else:
                     lines.extend(wrapped_lines)
-        # Active streaming content (not yet baked)
+        # Active streaming content (not yet baked) — render in interleaved order
         if tab.streaming:
-            if tab.trace_buf and self.trace_visible:
-                joined = "".join(tab.trace_buf)
-                for tline in joined.splitlines():
-                    text = f'  {DIM}{tline}{RESET}'
-                    continuation = " " * self._leading_visible_spaces(text)
-                    for wrapped in self._wrap_visual_text(
-                            text, max_w, continuation_prefix=continuation):
-                        lines.append(wrapped)
-            if tab.output_buf:
-                joined = "".join(tab.output_buf)
-                for is_toml, seg in self._iter_toml_segments(joined):
-                    if not seg:
+            for seg_kind, seg_chunks in tab.stream_segments:
+                joined = "".join(seg_chunks)
+                if not joined:
+                    continue
+                if seg_kind == "thinking":
+                    if not self.trace_visible:
                         continue
-                    if is_toml and not self.trace_visible:
-                        continue
-                    for tline in seg.splitlines():
-                        text = f'  {DIM}{tline}{RESET}' if is_toml else f'  {tline}'
+                    for tline in joined.splitlines():
+                        text = f'  {DIM}{tline}{RESET}'
                         continuation = " " * self._leading_visible_spaces(text)
                         for wrapped in self._wrap_visual_text(
                                 text, max_w, continuation_prefix=continuation):
                             lines.append(wrapped)
+                else:
+                    for is_toml, seg in self._iter_toml_segments(joined):
+                        if not seg:
+                            continue
+                        if is_toml and not self.trace_visible:
+                            continue
+                        for tline in seg.splitlines():
+                            text = f'  {DIM}{tline}{RESET}' if is_toml else f'  {tline}'
+                            continuation = " " * self._leading_visible_spaces(text)
+                            for wrapped in self._wrap_visual_text(
+                                    text, max_w, continuation_prefix=continuation):
+                                lines.append(wrapped)
         return lines
 
     def _build_step_detail_lines(self) -> list[str]:

@@ -234,11 +234,14 @@ class TabsMixin:
 
     def clear_worker_tabs(self):
         """Remove all worker tabs, keeping planner and logs."""
-        if self.view != "main":
-            self.view = "main"
+        # Save current view to the active tab before switching
+        if self.active_tab_idx < len(self.tabs):
+            self._active_tab.view = self.view
         logs = [t for t in self.tabs if t.id == "logs"]
         self.tabs = [self.tabs[0]] + logs
         self.active_tab_idx = 0
+        # Restore planner tab's saved view
+        self.view = self.tabs[0].view
         self._redraw_header()
 
     def _redraw_header(self):

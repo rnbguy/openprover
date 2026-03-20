@@ -15,7 +15,7 @@ from pathlib import Path
 
 from mcp.server.fastmcp import FastMCP
 
-from .core import LeanWorkDir, merge_lean_imports, run_lean_check
+from .core import LeanWorkDir, lean_has_errors, merge_lean_imports, run_lean_check
 
 mcp = FastMCP("lean_tools")
 
@@ -104,8 +104,7 @@ def lean_store(code: str) -> str:
     path = work_dir.make_file("mcp_store", candidate)
     success, feedback, _cmd_info = run_lean_check(path, project_dir)
     if not success:
-        has_error = any(": error" in line for line in feedback.splitlines())
-        if has_error:
+        if lean_has_errors(feedback):
             return feedback
         if "sorry" in feedback.lower():
             return f"Store rejected: code contains sorry\n{feedback}"

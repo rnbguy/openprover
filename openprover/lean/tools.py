@@ -4,7 +4,7 @@ import asyncio
 import logging
 import time
 
-from .core import LeanWorkDir, merge_lean_imports, run_lean_check
+from .core import LeanWorkDir, lean_has_errors, merge_lean_imports, run_lean_check
 
 logger = logging.getLogger("openprover.lean")
 
@@ -111,8 +111,7 @@ def _tool_lean_verify(
         result = "OK"
     else:
         # Distinguish real errors from warnings-only
-        has_error = any(": error" in line for line in feedback.splitlines())
-        if has_error:
+        if lean_has_errors(feedback):
             status = "error"
         elif "sorry" in feedback.lower():
             status = "partial"
@@ -145,8 +144,7 @@ def _tool_lean_store(
     success, feedback, _cmd_info = run_lean_check(path, lean_project_dir)
 
     if not success:
-        has_error = any(": error" in line for line in feedback.splitlines())
-        if has_error:
+        if lean_has_errors(feedback):
             logger.info("[%s] lean_store: rejected (errors)", worker_id)
             return (feedback, "error")
         # Warnings only — check for sorry

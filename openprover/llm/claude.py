@@ -374,7 +374,7 @@ class LLMClient:
                             elif name == "lean_verify":
                                 if "OK" in result_text.split('\n', 1)[0] or result_text.startswith("OK"):
                                     status = "ok"
-                                elif any(": error" in ln for ln in result_text.splitlines()):
+                                elif re.search(r"^\d+:\d+: error", result_text, re.MULTILINE):
                                     status = "error"
                                 elif "sorry" in result_text.lower():
                                     status = "partial"

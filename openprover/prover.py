@@ -11,7 +11,7 @@ from pathlib import Path
 
 from . import prompts
 from .budget import Budget
-from .lean import LeanTheorem, LeanWorkDir, run_lean_check, WORKER_TOOLS, execute_worker_tool
+from .lean import LeanTheorem, LeanWorkDir, run_lean_check, lean_has_errors, WORKER_TOOLS, execute_worker_tool
 from .llm import Interrupted, LLMClient
 from .tui import TUI
 from .tui._colors import YELLOW, GREEN, RESET as _RESET
@@ -1086,8 +1086,7 @@ class Prover:
 
                 # Distinguish real errors from warnings-only
                 if not success and feedback:
-                    has_error = any(": error" in line for line in feedback.splitlines())
-                    if not has_error and "sorry" not in feedback.lower():
+                    if not lean_has_errors(feedback) and "sorry" not in feedback.lower():
                         # Warnings only, no errors — treat as success
                         success = True
 

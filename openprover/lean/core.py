@@ -8,6 +8,14 @@ from pathlib import Path
 
 logger = logging.getLogger("openprover.lean")
 
+# Matches Lean 4 diagnostic lines like "6:8: error ..." (after file path stripping)
+_LEAN_ERROR_RE = re.compile(r"^\d+:\d+: error", re.MULTILINE)
+
+
+def lean_has_errors(feedback: str) -> bool:
+    """Return True if feedback contains Lean error diagnostics (not just warnings/info)."""
+    return bool(_LEAN_ERROR_RE.search(feedback))
+
 
 class LeanTheorem:
     """Parsed representation of a THEOREM.lean file with sorry placeholders."""

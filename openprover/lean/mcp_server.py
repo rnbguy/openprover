@@ -104,7 +104,7 @@ def lean_store(code: str) -> str:
     path = work_dir.make_file("mcp_store", candidate)
     success, feedback, _cmd_info = run_lean_check(path, project_dir)
     if not success:
-        has_error = any(": error:" in line for line in feedback.splitlines())
+        has_error = any(": error" in line for line in feedback.splitlines())
         if has_error:
             return feedback
         if "sorry" in feedback.lower():

@@ -12,7 +12,7 @@ With `--lean-project`, workers get access to **lean_verify** (compile Lean 4 cod
 
 Modes:
 - **Interactive** (default): see each step's plan, accept or give feedback
-- **Autonomous** (`--autonomous`): runs hands-off until proof found or step budget exhausted
+- **Autonomous** (`--autonomous`): runs hands-off until proof found or budget exhausted
 - **Formal verification** (`--lean-project`): proof attempts are verified via `lake env lean`, workers can verify code and search Lean libraries
 
 ## Requirements
@@ -23,7 +23,7 @@ Modes:
 ## Install
 
 ```bash
-git clone https://github.com/yourusername/openprover.git
+git clone https://github.com/open-prover/openprover.git
 cd openprover
 python -m venv .venv && source .venv/bin/activate
 pip install -e .
@@ -37,31 +37,34 @@ openprover fetch-lean-data
 ## Usage
 
 ```bash
-# Interactive mode
+# Interactive mode (file argument = theorem)
 openprover examples/sqrt2_irrational.md
 
-# Autonomous with Opus, 100 step budget, 3 parallel workers
-openprover examples/erdos_838.md --model opus --max-steps 100 --autonomous -P 3
+# Autonomous with Opus, 2h time budget, 3 parallel workers
+openprover --theorem examples/erdos_838.md --model opus --max-time 2h --autonomous -P 3
 
-# Resume an interrupted run
-openprover --run-dir runs/sqrt2-irrational-20260217-143012
+# Token budget instead of time
+openprover --theorem examples/cauchy_schwarz.md --max-tokens 500000
+
+# Resume an interrupted run (directory argument = run dir)
+openprover runs/sqrt2-irrational-20260217-143012
 
 # Use different models for planner and worker
-openprover examples/cauchy_schwarz.md --planner-model opus --worker-model sonnet
+openprover --theorem examples/cauchy_schwarz.md --planner-model opus --worker-model sonnet
 
 # Enable web searches (disabled by default)
-openprover examples/cauchy_schwarz.md --no-isolation
+openprover --theorem examples/cauchy_schwarz.md --no-isolation
 
 # Use a local model (via vLLM)
-openprover examples/infinite_primes.md --model minimax-m2.5 --provider-url http://localhost:8000
+openprover --theorem examples/infinite_primes.md --model minimax-m2.5 --provider-url http://localhost:8000
 
 # Prove and formalize in Lean 4
-openprover examples/addition.md \
+openprover --theorem examples/addition.md \
   --lean-project ~/mathlib4 \
   --lean-theorem examples/addition.lean
 
 # Formalize an existing proof
-openprover examples/addition.md \
+openprover --theorem examples/addition.md \
   --lean-project ~/mathlib4 \
   --lean-theorem examples/addition.lean \
   --proof runs/addition-20260223/PROOF.md
@@ -82,18 +85,21 @@ openprover examples/addition.md \
 | `--model` | `sonnet` | Model for both planner and worker |
 | `--planner-model` | | Override model for planner |
 | `--worker-model` | | Override model for worker |
-| `--max-steps` | `50` | Step budget |
+| `--max-time` | `4h` | Wall-clock time budget (e.g. `30m`, `2h`) |
+| `--max-tokens` | | Output token budget (mutually exclusive with `--max-time`) |
+| `--conclude-after` | `0.99` | Fraction of budget that triggers conclusion phase (0.9-1.0) |
 | `--autonomous` | off | Run without human confirmation |
 | `-P, --parallelism` | `1` | Max parallel workers per step |
-| `--run-dir` | | Resume from an existing run directory |
-| `--no-isolation` | | Enable literature search / web access (isolation is on by default) |
-| `--give-up-after` | `0.5` | Fraction of steps before give_up is allowed |
+| `--isolation` / `--no-isolation` | on | Web access for literature search (off by default) |
+| `--give-up-after` | `0.5` | Fraction of budget before give_up is allowed |
 | `--lean-project` | | Path to Lean project with lakefile |
 | `--lean-theorem` | | Path to THEOREM.lean (requires `--lean-project`) |
 | `--proof` | | Path to existing PROOF.md (formalize-only mode) |
-| `--lean-worker-actions` | auto | Worker tool calls via MCP/vLLM (auto-enabled with `--lean-project` + capable worker) |
+| `--lean-items` | auto | Allow saving .lean items to the repo (auto-enabled with `--lean-project`) |
+| `--lean-worker-tools` | auto | Worker tool calls (lean_verify, lean_search) via MCP/vLLM (auto-enabled with `--lean-project` + capable worker) |
 | `--headless` | off | Non-interactive mode (logs to stdout, implies `--autonomous`) |
 | `--verbose` | off | Show full LLM responses |
+| `--read-only` | off | Inspect run without resuming |
 | `--provider-url` | `http://localhost:8000` | Server URL for local models |
 | `--answer-reserve` | `4096` | Tokens reserved for answer after thinking (local models) |
 
@@ -107,8 +113,8 @@ Available models: `sonnet`, `opus`, `minimax-m2.5`
 | `i` | Show worker input (on worker tabs) |
 | `w` | Toggle whiteboard view |
 | `a` | Toggle autonomous mode |
-| `←/→` | Switch between planner/worker tabs |
-| `↑/↓` | Browse step history / navigate worker actions |
+| `Left/Right` | Switch between planner/worker tabs |
+| `Up/Down` | Browse step history / navigate worker actions |
 | `PgUp/PgDn` | Scroll content |
 | `?` | Help overlay |
 

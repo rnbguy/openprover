@@ -9,9 +9,12 @@ cli.py          Parse args, setup TUI, run prover, print cost
 prover.py       Planner loop, step dispatch, action handlers, Repo
 llm.py          LLMClient (Claude CLI), HFClient (OpenAI-compatible HTTP)
 prompts.py      All prompt templates, TOML parser, actions enum
-lean.py         Lean 4 integration: parsing, assembly, verification
-lean_data.py    Lean Explore data management (fetch, availability checks)
-mcp_server.py   MCP server exposing lean_verify and lean_search tools
+budget.py       Budget tracking (token or time limits)
+lean/
+  core.py       Lean 4 integration: parsing, assembly, verification
+  data.py       Lean Explore data management (fetch, availability checks)
+  mcp_server.py MCP server exposing lean_verify and lean_search tools
+  tools.py      Lean tool definitions for vLLM native tool calling
 tui.py          Full-screen terminal UI with tabs, streaming, key handling
 inspect.py      Read-only run browser
 ```
@@ -42,11 +45,21 @@ inspect.py      Read-only run browser
 Entry point. Parses arguments, creates a `Prover` and `TUI`, installs signal handlers, runs the prover, prints cost summary on exit.
 
 Subcommands:
-- `openprover <theorem>` — main proving loop
-- `openprover inspect [run_dir]` — browse a historical run
-- `openprover fetch-lean-data` — download Lean Explore search data and models
+- `openprover <theorem>` -- main proving loop
+- `openprover inspect [run_dir]` -- browse a historical run
+- `openprover fetch-lean-data` -- download Lean Explore search data and models
 
 The LLM client is constructed via a factory pattern: `Prover` calls `make_llm(archive_dir)` after setting up the work directory, so the archive path is correct from the start. Separate planner and worker models are supported via `--planner-model` and `--worker-model`.
+
+Run configuration is saved to `run_config.toml` in the work directory on fresh starts and restored on resume. CLI flags override saved values.
+
+### `budget.py`
+
+Tracks proving session budget in two modes:
+- **Time budget** (`--max-time`, default `4h`): wall-clock seconds
+- **Token budget** (`--max-tokens`): cumulative output tokens
+
+The `Budget` class tracks elapsed time/tokens and exposes `is_exhausted`, `should_conclude` (at `--conclude-after` fraction), and `can_give_up` (at `--give-up-after` fraction). The planner prompt receives budget status so it can pace itself.
 
 ### `prover.py`
 
@@ -54,11 +67,11 @@ The `Prover` class owns the proving loop and all state.
 
 **Init:** Creates or resumes a run directory (`runs/<slug>-<timestamp>/`). Loads or initializes the whiteboard. Creates the `Repo` instance. Resume is detected by checking for existing `WHITEBOARD.md` + `THEOREM.md`; step count inferred from `step_NNN` directories.
 
-When `lean_worker_actions` is enabled, sets up tool calling for workers:
-- **Claude CLI workers**: Configures an MCP server (`mcp_server.py`) with `lean_verify` and `lean_search` tools
+When `lean_worker_tools` is enabled, sets up tool calling for workers:
+- **Claude CLI workers**: Configures an MCP server (`lean/mcp_server.py`) with `lean_verify` and `lean_search` tools
 - **vLLM workers**: Initializes LeanExplore search service in-process and uses native OpenAI tool calling
 
-**Step flow** (`run` → `_do_step`):
+**Step flow** (`run` -> `_do_step`):
 
 1. **Planner call**: Build prompt from whiteboard + repo index + prev worker output. LLM call with streaming (shows in planner tab). Response must contain a `` ```toml `` block.
 
@@ -79,7 +92,7 @@ When `lean_worker_actions` is enabled, sets up tool calling for workers:
 | `_handle_write_whiteboard` | Update the whiteboard without spawning workers. |
 | `_handle_read_theorem` | Return THEOREM.md + THEOREM.lean + PROOF.md content to the planner. |
 | `_handle_submit_proof` | Save proof to `PROOF.md`. If Lean theorem exists, also assembles and verifies Lean proof via `lake env lean`, writes `PROOF.lean` on success. |
-| `_handle_give_up` | Terminate. Only allowed after the give-up threshold (default 50% of step budget). |
+| `_handle_give_up` | Terminate. Only allowed after the give-up threshold (default 50% of budget). |
 
 **`Repo` class** (also in `prover.py`):
 - `list_summaries()`: Returns index of all items (name + first-line summary)
@@ -93,11 +106,11 @@ When `lean_worker_actions` is enabled, sets up tool calling for workers:
 
 | Mode | Inputs | Goal | Terminates when |
 |------|--------|------|-----------------|
-| `prove` | THEOREM.md | Informal proof | `submit_proof` → PROOF.md |
+| `prove` | THEOREM.md | Informal proof | `submit_proof` -> PROOF.md |
 | `prove_and_formalize` | THEOREM.md + THEOREM.lean | Both proofs | PROOF.md + PROOF.lean both exist |
-| `formalize_only` | THEOREM.md + THEOREM.lean + PROOF.md | Formal proof | `submit_proof` succeeds → PROOF.lean |
+| `formalize_only` | THEOREM.md + THEOREM.lean + PROOF.md | Formal proof | `submit_proof` succeeds -> PROOF.lean |
 
-**Worker tool execution** (when `lean_worker_actions` is enabled):
+**Worker tool execution** (when `lean_worker_tools` is enabled):
 
 For the vLLM path, tools are executed in a multi-turn loop: the LLM requests tool calls, `_execute_worker_tool()` dispatches to `_tool_lean_verify()` or `_tool_lean_search()`, results are appended to the conversation, and the LLM continues.
 
@@ -131,7 +144,7 @@ Web search: When `web_search=True`, replaces `--tools ""` with `--permission-mod
 MCP tool calling: When `mcp_config` is set, adds `--mcp-config <json> --strict-mcp-config --permission-mode bypassPermissions --allowedTools mcp__lean_tools__lean_verify mcp__lean_tools__lean_search`. Tool events are detected from the stream:
 - `tool_use` content blocks are tracked by their ID (capturing tool name and input as they stream in)
 - Tool results appear as top-level `{"type": "user"}` messages (not as content blocks), containing `tool_result` entries matched by `tool_use_id`
-- MCP prefixes are stripped from tool names (`mcp__lean_tools__lean_verify` → `lean_verify`)
+- MCP prefixes are stripped from tool names (`mcp__lean_tools__lean_verify` -> `lean_verify`)
 - Status is inferred from result text (e.g., `lean_verify` results starting with "OK" = success)
 
 Archiving: Every call saved to `archive/calls/call_NNN.json` with full prompt, system prompt, schema, response, cost, timing, and errors.
@@ -162,7 +175,7 @@ ACTIONS = ["submit_proof", "give_up", "read_items", "write_items",
 
 **System prompts:**
 - `planner_system_prompt(...)`: Built dynamically. Instructs the planner to coordinate proof search, maintain whiteboard, manage repo, delegate to workers. Accepts `lean_mode` and `num_sorries` to conditionally include Lean-specific actions and principles. Key rules: `submit_proof` terminates the session (must have verified proof), `give_up` only after the threshold.
-- `worker_system_prompt(lean_worker_actions=False)`: Instructs worker to complete its task rigorously. When `lean_worker_actions=True`, documents `lean_verify` and `lean_search` tools. If verifying, be skeptical and end with `VERDICT: CORRECT` or `VERDICT: INCORRECT`.
+- `worker_system_prompt(lean_worker_tools=False)`: Instructs worker to complete its task rigorously. When `lean_worker_tools=True`, documents `lean_verify` and `lean_search` tools. If verifying, be skeptical and end with `VERDICT: CORRECT` or `VERDICT: INCORRECT`.
 - `SEARCH_SYSTEM_PROMPT`: Instructs literature search worker.
 
 **Prompt formatters:**
@@ -179,9 +192,9 @@ ACTIONS = ["submit_proof", "give_up", "read_items", "write_items",
 - Handles `[[tasks]]`, `[[items]]`, and `[[lean_blocks]]` array-of-tables syntax
 - Post-processes `lean_block_N` numbered keys into a `lean_blocks` list (both styles accepted from LLMs)
 
-### `lean.py`
+### `lean/core.py`
 
-Lean 4 integration — all formal verification logic isolated here.
+Lean 4 integration -- all formal verification logic isolated here.
 
 **`LeanTheorem`**: Parses a THEOREM.lean file.
 - Extracts preamble (import/open lines at top), locates all `sorry` positions via `\bsorry\b` regex
@@ -191,23 +204,23 @@ Lean 4 integration — all formal verification logic isolated here.
 
 **`LeanWorkDir`**: Manages an `OpenProver-{random_8hex}` subdirectory within the Lean project. Generated lean files go here with `{slug}-{random_6hex}.lean` naming. The final verified proof is written as `PROOF.lean`.
 
-### `mcp_server.py`
+### `lean/mcp_server.py`
 
 MCP server exposing `lean_verify` and `lean_search` tools for Claude CLI workers. Runs as a subprocess spawned by Claude CLI via `--mcp-config`. Communicates over stdio using JSON-RPC (MCP protocol).
 
-- **`lean_verify(code)`**: Writes code to a temp file in the Lean work directory, runs `run_lean_check()`, returns "OK — no errors" or compiler output.
+- **`lean_verify(code)`**: Writes code to a temp file in the Lean work directory, runs `run_lean_check()`, returns "OK -- no errors" or compiler output.
 - **`lean_search(query)`**: Searches Lean 4 declarations using LeanExplore. Returns matching names, signatures, and docstrings.
 
 Environment variables `LEAN_PROJECT_DIR` and `LEAN_WORK_DIR` are set by the prover when spawning the MCP server.
 
-### `lean_data.py`
+### `lean/data.py`
 
 Manages LeanExplore search data and dependencies.
 
 - `is_lean_data_available()`: Checks for lean-explore package, torch, sentence-transformers, and fetched data files
 - `fetch_lean_data()`: Installs missing dependencies (lean-explore, torch CPU, sentence-transformers), fetches search data via `lean-explore data fetch`, and pre-downloads the embedding model
 
-Called automatically on startup when `--lean-worker-actions` is enabled and data is missing. Also available as `openprover fetch-lean-data`.
+Called automatically on startup when `--lean-worker-tools` is enabled and data is missing. Also available as `openprover fetch-lean-data`.
 
 ### Lean Explore search pipeline
 
@@ -231,17 +244,17 @@ Data is fetched once via `openprover fetch-lean-data` or automatically on first 
 
 Full-screen terminal UI using ANSI escape codes and scroll regions.
 
-**Layout:** Rows 1–4 are a fixed header (theorem name, step counter, model, tab bar). Row 5+ is the scrolling content area.
+**Layout:** Rows 1-4 are a fixed header (theorem name, step counter, model, tab bar). Row 5+ is the scrolling content area.
 
 **Tab system:**
 - Always has a `planner` tab (fixed)
 - Spawn and search steps create worker tabs dynamically
-- Tab bar shows status indicators: `✓` = done, `…` = streaming
+- Tab bar shows status indicators: checkmark = done, ellipsis = streaming
 - Left/right arrows switch tabs instantly
 
 **Views:** `main` (log + streaming trace), `whiteboard`, `help`, `step_detail`, `input` (worker task on worker tabs).
 
-**Key handling:** Background thread reads stdin in cbreak mode via `select()` + `os.read()`. Instant keys (work during streaming): `r`, `i`, `w`, `a`, `←/→`, `↑/↓`, `PgUp/PgDn`, `?`. Queued keys (during confirmation): `Tab`, `Enter`, `s`, `p`, `q`, `Esc`.
+**Key handling:** Background thread reads stdin in cbreak mode via `select()` + `os.read()`. Instant keys (work during streaming): `r`, `i`, `w`, `a`, left/right, up/down, PgUp/PgDn, `?`. Queued keys (during confirmation): `Tab`, `Enter`, `s`, `p`, `q`, `Esc`.
 
 **Worker action display:** When workers use `lean_verify` or `lean_search`, each tool call appears as a navigable entry in the worker tab. Up/down arrows cycle through actions, Enter opens a detail view showing the tool input and result.
 
@@ -265,6 +278,7 @@ runs/<slug>-<timestamp>/
   PROOF.md                     - written only if proof found
   PROOF.lean                   - formal Lean proof (if lean mode)
   DISCUSSION.md                - post-session analysis
+  run_config.toml              - saved run configuration (for resume)
   repo/
     *.md                       - repository items (lemmas, observations, etc.)
   steps/
@@ -282,7 +296,7 @@ runs/<slug>-<timestamp>/
 
 **Slug format:** First 40 chars of theorem, lowercased, non-alphanumeric replaced with hyphens. Example: `sqrt2-irrational-20260220-143706`.
 
-**Resume:** If `--run-dir` contains `WHITEBOARD.md` + `THEOREM.md`, the prover picks up from the last completed step.
+**Resume:** If the run directory contains `WHITEBOARD.md` + `THEOREM.md`, the prover picks up from the last completed step. Settings are restored from `run_config.toml`; CLI flags override saved values.
 
 ## Verification
 
@@ -294,7 +308,7 @@ runs/<slug>-<timestamp>/
 - **`submit_proof`**: The planner provides N replacement blocks (one per `sorry` in THEOREM.lean) plus optional context. The system assembles the complete file, verifies it, and writes PROOF.lean on success. On failure, compiler errors are fed back.
 - **`read_theorem`**: Returns THEOREM.md, THEOREM.lean, and PROOF.md (if provided) content so the planner can reference the formal statement.
 
-**Worker tools** (when `--lean-worker-actions` is enabled): Workers can directly verify Lean code (`lean_verify`) and search Lean libraries (`lean_search`) during their reasoning. Tool calls are shown in the TUI worker tab.
+**Worker tools** (when `--lean-worker-tools` is enabled): Workers can directly verify Lean code (`lean_verify`) and search Lean libraries (`lean_search`) during their reasoning. Tool calls are shown in the TUI worker tab.
 
 Generated Lean files are placed in `<lean-project>/OpenProver-<random_id>/` with `{slug}-{random_suffix}.lean` names to avoid collisions. No `import` statements are allowed in injected code (enforced at assembly time).
 
@@ -311,7 +325,7 @@ Task descriptions can reference repository items via `[[slug]]` syntax. Before a
 
 ## Adding a new worker tool
 
-1. Add the tool function to `mcp_server.py` (decorated with `@mcp.tool()`)
+1. Add the tool function to `lean/mcp_server.py` (decorated with `@mcp.tool()`)
 2. Add it to `WORKER_TOOLS` in `prover.py` (for vLLM tool calling)
 3. Add a dispatch case in `_execute_worker_tool()` in `prover.py`
 4. Add the `--allowedTools` entry in `llm.py` (MCP tool name)

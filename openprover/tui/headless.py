@@ -13,7 +13,6 @@ class HeadlessTUI:
         self.whiteboard = ""
         self.wb_scroll_offset = 0
         self.step_entries: list[dict] = []
-        self.pending_action: str | None = None
         self.trace_visible = False
         self.budget_status = ""
         self._budget_ref = None
@@ -140,9 +139,6 @@ class HeadlessTUI:
 
     def get_confirmation(self) -> str:
         return ""
-
-    def get_pending_action(self) -> str | None:
-        return None
 
     def show_interrupt_options(self):
         pass

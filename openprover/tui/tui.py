@@ -31,7 +31,6 @@ class TUI(TextMixin, StreamMixin, NavMixin, TabsMixin, StepsMixin,
         self.view = "whiteboard_split"
         self.whiteboard = ""
         self.wb_scroll_offset = 0
-        self.pending_action: str | None = None
         self.autonomous = False
         self._old_termios = None
         self._active = False

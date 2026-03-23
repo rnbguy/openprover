@@ -529,15 +529,6 @@ class Prover:
         logger.info("Step %d (%s)", self.step_num, self.budget.status_str())
         self.autonomous = self.tui.autonomous
 
-        # Check for autonomous mode actions
-        if self.autonomous:
-            action = self.tui.get_pending_action()
-            if action == "quit":
-                self.shutting_down = True
-                return "stop"
-            if action == "summarize":
-                pass  # TODO: on-demand summary
-
         # Clear previous step's worker tabs
         self.tui.clear_worker_tabs()
 

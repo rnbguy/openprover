@@ -48,8 +48,8 @@ HELP_TEXT = f"""\
     w           cycle whiteboard (split \u2192 full \u2192 off)
     a           toggle autonomous mode
     {DIM}\u2190/\u2192{RESET}         switch tabs
-    {DIM}\u2191/\u2193{RESET}         scroll chat history
-    pgup/pgdn   scroll chat history (page)
+    {DIM}\u2191/\u2193{RESET}         navigate entries / scroll
+    pgup/pgdn   scroll (page)
     ?           this help
     esc/enter   dismiss overlay
 
@@ -58,7 +58,7 @@ HELP_TEXT = f"""\
     tab         switch accept / feedback
     enter       confirm or view step detail
     esc         close detail / deselect
-    s           summarize progress
+    a           accept and go autonomous
 
   {DIM}In autonomous mode all keys are instant.{RESET}
   {DIM}Press ? or enter to dismiss.{RESET}

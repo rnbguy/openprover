@@ -119,7 +119,7 @@ Available models: `sonnet`, `opus`, `minimax-m2.5`
 | `PgUp/PgDn` | Scroll content |
 | `?` | Help overlay |
 
-When confirming a step: Tab switches between accept/feedback, Enter confirms or opens detail view, Esc dismisses. In autonomous mode: `s` summarizes, `p` pauses, `q` quits.
+When confirming a step: Tab switches between accept/feedback, Enter confirms or opens detail view, Esc dismisses, `a` accepts and enters autonomous mode.
 
 ## Planner actions
 

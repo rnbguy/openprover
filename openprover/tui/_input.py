@@ -240,15 +240,6 @@ class InputMixin:
             elif self._active_tab.scroll_offset > 0:
                 self._active_tab.scroll_offset = 0
                 self._redraw()
-        elif self.autonomous and ch == 's':
-            self.pending_action = 'summarize'
-
-    def get_pending_action(self) -> str | None:
-        self._check_keys()
-        action = self.pending_action
-        self.pending_action = None
-        return action
-
     def interrupt(self):
         """Cancel any pending confirmation by injecting ctrl+c into key queue."""
         self._key_queue.put('\x03')
@@ -392,10 +383,6 @@ class InputMixin:
                 if self._confirm_selected == 0 and ch in ('r', 'd', 'w', '?'):
                     self._process_key(ch)
                     continue
-
-                if (self._nav_step == -1 and not self._nav_proposal
-                        and self._confirm_selected == 0 and ch == 's'):
-                    return ch
 
                 if ch == 'a' and self._confirm_selected == 0:
                     if self._nav_step >= 0:

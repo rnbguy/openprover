@@ -175,6 +175,21 @@ The `examples/` directory has theorem statements at various difficulty levels:
 | `infinite_primes.md` | Easy |
 | `e_irrational.md` | Medium |
 | `cauchy_schwarz.md` | Medium |
-| `erdos_205.md` | Hard (open) |
+| `erdos_205.md` | Medium |
 | `erdos_838.md` | Hard (open) |
-| `collatz.md` | Hard (open) |
+| `collatz.md` | Harder (open) |
+
+
+# Cite
+
+If you find OpenProver helpful in your research cite simply as:
+
+```
+@misc{openprover,
+  author = {Matěj Kripner},
+  title = {OpenProver},
+  year = {2025},
+  publisher = {GitHub},
+  url = {https://github.com/kripner/openprover}
+}
+```

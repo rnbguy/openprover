@@ -374,7 +374,7 @@ def _cmd_prove():
     if not args.headless:
         label = "Resuming" if resuming else "Starting"
         _model_hint = planner_model if planner_model == worker_model else f"{planner_model}/{worker_model}"
-        print(f"  {label} openprover ({_model_hint})…", end="", flush=True)
+        print(f"  {label} openprover ({_model_hint}) ...", end="", flush=True)
 
     # Resolve --lean-worker-tools default
     if args.lean_worker_tools is None:

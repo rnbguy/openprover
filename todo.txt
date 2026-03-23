@@ -1,16 +1,8 @@
-!! (see last nontrivial run)
-- cycling
-- formal proof submission is broken
-
-
 - ResearchStep dataset
 - maybe we can try using QED-Nano? If this worked, that would be very cool.
 - integration with tools like blueprint or Corca
 - use the Reasoning Cache (RT) idea (https://arxiv.org/abs/2602.03773) - similarly to QED-Nano
 - add a mode where OpenProver also tries to 1) simplify the final proof or make it nicer and 2) generalize the proof
-
-- use LeanExplore (https://github.com/justincasher/lean-explore) during autoformalization.
-  Instruct the agent to search at most once for each thing (we don't want to get stuck on the searching).
 
 
 ideas:

@@ -718,6 +718,10 @@ class Prover:
 
         # Save planner output
         self._save_step(step_dir, primary_plan)
+        # For multi-action steps, persist all plans so _load_history can
+        # reconstruct them (planner.toml only stores the primary plan).
+        if len(plans) > 1:
+            (step_dir / "plans.json").write_text(json.dumps(plans))
 
         # Interactive confirmation for the whole batch
         result = self._confirm_action(plans, step_dir, resp)
@@ -1985,10 +1989,54 @@ class Prover:
             summary = plan.get("summary", "")
             meta = self._read_step_meta(step_dir)
 
+            # Reconstruct full plans list for multi-action steps
+            plans_file = step_dir / "plans.json"
+            if plans_file.exists():
+                try:
+                    plans = json.loads(plans_file.read_text())
+                except (json.JSONDecodeError, TypeError):
+                    plans = [plan]
+            else:
+                plans = [plan]
+
             # Log step in planner tab
-            step_idx = self.tui.step_complete(step_num, action, summary)
-            if action == "write_items":
-                self.tui.step_entries[step_idx]["write_items"] = plan.get("items", [])
+            step_idx = self.tui.step_complete(
+                step_num, action, summary, plans=plans,
+            )
+            # Populate write_items from any plan in the batch (not just when
+            # the primary action is write_items).
+            has_write_items = False
+            for p in plans:
+                if p.get("action") == "write_items" and p.get("items"):
+                    self.tui.step_entries[step_idx]["write_items"] = p["items"]
+                    has_write_items = True
+                    break
+            # Reconstruct lean verification results from disk
+            if action == "write_items" or has_write_items:
+                lean_dir = step_dir / "lean"
+                if lean_dir.exists():
+                    lean_parts: list[str] = []
+                    for result_file in sorted(lean_dir.glob("result_*.txt")):
+                        # Extract slug from filename: result_0_slug.txt
+                        slug = "_".join(
+                            result_file.stem.split("_")[2:]
+                        )
+                        result_text = result_file.read_text().strip()
+                        if result_text == "OK":
+                            lean_parts.append(
+                                f"[[{slug}]]: Lean verification PASSED"
+                            )
+                        else:
+                            lean_parts.append(
+                                f"[[{slug}]]: Lean verification FAILED\n"
+                                f"```\n{result_text}\n```"
+                            )
+                    if lean_parts:
+                        self.tui.append_step_action_output(
+                            step_num,
+                            "## Lean Verification Results\n\n"
+                            + "\n\n".join(lean_parts),
+                        )
             if action == "read_theorem":
                 # Reconstruct the theorem content that was read
                 parts = [f"## THEOREM.md\n\n{self.theorem_text}"]

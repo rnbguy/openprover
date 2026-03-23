@@ -585,8 +585,11 @@ class StepsMixin:
 
         action_output = (entry.get("action_output") or "").rstrip()
         # Per-item full content sections for write_items (before action output
-        # so content appears before verification errors)
-        if action == "write_items":
+        # so content appears before verification errors).  Show whenever the
+        # entry carries write_items data, not only when the *primary* action
+        # is "write_items" -- multi-action steps (write_items + spawn) set
+        # the primary action to "spawn" but still populate this field.
+        if entry.get("write_items"):
             items = entry.get("write_items") or []
             for item in items:
                 slug = item.get("slug", "?")
@@ -598,7 +601,9 @@ class StepsMixin:
                 else:
                     add_section(f"{slug}{ext}", [f"{DIM}(delete){RESET}"], color=RED)
 
-        if action_output and action != "spawn":
+        # Show action_output for non-spawn actions, or when a multi-action
+        # step has write_items output (e.g. lean verification results).
+        if action_output and (action != "spawn" or entry.get("write_items")):
             output_title = {
                 "read_theorem": "Theorem Content",
                 "read_items": "Items Content",

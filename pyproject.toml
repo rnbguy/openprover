@@ -6,6 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "openprover"
 version = "1.0.0"
 description = "Automated theorem proving using agentic system with frontier LLMs."
+readme = "README.md"
 authors = [{name = "Matěj Kripner", email = "kripner@ufal.mff.cuni.cz"}]
 requires-python = ">=3.10"
 dependencies = [

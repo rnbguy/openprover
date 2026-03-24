@@ -135,7 +135,7 @@ class CodexClient:
                     "model": self.model,
                     "ephemeral": True,
                     "approvalPolicy": "never",
-                    "developer_instructions": system_prompt,
+                    "developerInstructions": system_prompt,
                 }
                 if self.mcp_config is not None:
                     thread_start_params["config"] = self.mcp_config

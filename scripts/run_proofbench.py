@@ -3,12 +3,21 @@
 
 import argparse
 import csv
+import shutil
 import subprocess
 import sys
 import tempfile
 from pathlib import Path
 
 PROOFBENCH_CSV = Path(__file__).resolve().parent.parent / "examples" / "proofbench.csv"
+
+
+def _check_tool(name: str) -> None:
+    if shutil.which(name) is None:
+        print(f"Error: '{name}' not found on PATH.", file=sys.stderr)
+        if name == "codex":
+            print("Install Codex CLI so 'codex' is available on PATH.", file=sys.stderr)
+        sys.exit(1)
 
 
 def load_problems(csv_path: Path) -> dict[str, dict]:
@@ -20,13 +29,26 @@ def load_problems(csv_path: Path) -> dict[str, dict]:
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Run openprover on a ProofBench problem")
+    parser = argparse.ArgumentParser(
+        description="Run openprover on a ProofBench problem"
+    )
     parser.add_argument("problem", help="Problem ID (e.g. PB-Basic-001)")
-    parser.add_argument("--list", action="store_true", help="List available problems and exit")
-    parser.add_argument("--model", default="sonnet", choices=["sonnet", "opus", "minimax-m2.5"])
-    parser.add_argument("--provider-url", default="http://localhost:8000",
-                        help="Server URL for local models (default: http://localhost:8000)")
-    parser.add_argument("--max-steps", type=int, default=50)
+    parser.add_argument(
+        "--list", action="store_true", help="List available problems and exit"
+    )
+    parser.add_argument(
+        "--model", default="sonnet", choices=["sonnet", "opus", "gpt", "minimax-m2.5"]
+    )
+    parser.add_argument(
+        "--provider-url",
+        default="http://localhost:8000",
+        help="Server URL for local models (default: http://localhost:8000)",
+    )
+    parser.add_argument(
+        "--max-time",
+        default="30m",
+        help="Wall-clock time budget (e.g. 30m, 2h; default: 30m)",
+    )
     parser.add_argument("--autonomous", action="store_true")
     parser.add_argument("--isolation", action="store_true")
     parser.add_argument("--verbose", action="store_true")
@@ -48,12 +70,22 @@ def main():
     row = problems[args.problem]
     statement = row["Problem"]
 
+    if args.model == "gpt":
+        _check_tool("codex")
+
     # Write problem statement to a temp file and invoke openprover
     with tempfile.NamedTemporaryFile(mode="w", suffix=".md", delete=False) as f:
         f.write(f"# {args.problem}\n\n{statement}\n")
         theorem_path = f.name
 
-    cmd = ["openprover", theorem_path, "--model", args.model, "--max-steps", str(args.max_steps)]
+    cmd = [
+        "openprover",
+        theorem_path,
+        "--model",
+        args.model,
+        "--max-time",
+        args.max_time,
+    ]
     if args.model == "minimax-m2.5":
         cmd.extend(["--provider-url", args.provider_url])
     if args.autonomous:

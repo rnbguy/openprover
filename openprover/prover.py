@@ -317,8 +317,12 @@ class Prover:
             return None
         def cb(t, k="text"):
             if output_only and k == "thinking":
+                # Count thinking tokens so spinner shows progress, but don't display.
+                target = self.tui._find_tab_or_none(tab)
+                if target and target.streaming:
+                    target.spinner_tokens += 1
                 return
-            self.tui.stream_text(t, kind=k, tab=tab)
+            self.tui.stream_text(t, kind=k, tab=tab, show_toml=output_only)
         return cb
 
     def _setup_tui(self, *, autonomous: bool = False):
@@ -650,14 +654,14 @@ class Prover:
                     phase2_prompt = prompts.format_planner_truncated(prompt, resp["result"])
                     self.tui.stream_start("forcing decision", tab="planner")
                     try:
-                        phase2_max = getattr(self.planner_llm, 'answer_reserve', 4096)
+                        phase2_max = getattr(self.planner_llm, 'answer_reserve', None) or 16_000
                         resp = self.planner_llm.call(
                             prompt=phase2_prompt,
                             system_prompt=system_prompt,
                             label=f"planner_step_{self.step_num}_phase2",
                             stream_callback=self._stream_cb("planner", output_only=True),
                             archive_path=step_dir / "planner_call_phase2.md",
-                            **({"max_tokens": phase2_max} if hasattr(self.planner_llm, 'answer_reserve') else {}),
+                            max_tokens=phase2_max,
                         )
                     except Interrupted:
                         self.tui.stream_end(tab="planner")
@@ -1517,7 +1521,11 @@ class Prover:
                     self.worker_llm.clear_soft_interrupt()
                 label = "interrupted - forcing output..." if reason == "soft_interrupted" else "forcing output..."
                 self.tui.stream_start(label, tab=worker_id)
-                answer_reserve = getattr(self.worker_llm, 'answer_reserve', 4096)
+                answer_reserve = getattr(self.worker_llm, 'answer_reserve', None)
+                # For Claude CLI, CLAUDE_CODE_MAX_OUTPUT_TOKENS is the total budget
+                # including thinking tokens. Use a larger Phase 2 budget so thinking
+                # doesn't crowd out the actual text output.
+                phase2_max = answer_reserve or 16_000
                 phase2_prompt = (
                     f"{prompt}\n\n---\n\n"
                     f"Your previous reasoning was cut off. Continue with your final answer.\n\n"
@@ -1530,7 +1538,7 @@ class Prover:
                     label=f"{worker_id}_phase2",
                     stream_callback=self._stream_cb(worker_id, output_only=True),
                     archive_path=archive_path.parent / f"{archive_path.stem}_phase2.md" if archive_path else None,
-                    max_tokens=answer_reserve,
+                    max_tokens=phase2_max,
                 )
                 self.tui.stream_end(tab=worker_id)
                 resp = {
@@ -1649,11 +1657,11 @@ class Prover:
                         "content": "Your response was cut off. Continue with your final answer.",
                     })
                     self.tui.stream_start("forcing output...", tab=worker_id)
-                    answer_reserve = getattr(self.worker_llm, 'answer_reserve', 4096)
+                    answer_reserve = getattr(self.worker_llm, 'answer_reserve', None)
                     resp = self.worker_llm.chat(
                         messages=messages,
                         tools=None,
-                        max_tokens=answer_reserve,
+                        max_tokens=answer_reserve or 16_000,
                         label=f"{worker_id}_phase2",
                         stream_callback=self._stream_cb(worker_id, output_only=True),
                         archive_path=(

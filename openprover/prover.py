@@ -658,6 +658,7 @@ class Prover:
                             stream_callback=self._stream_cb("planner", output_only=True),
                             archive_path=step_dir / "planner_call_phase2.md",
                             max_tokens=phase2_max,
+                            no_thinking=True,
                         )
                     except Interrupted:
                         self.tui.stream_end(tab="planner")
@@ -1535,6 +1536,7 @@ class Prover:
                     stream_callback=self._stream_cb(worker_id, output_only=True),
                     archive_path=archive_path.parent / f"{archive_path.stem}_phase2.md" if archive_path else None,
                     max_tokens=phase2_max,
+                    no_thinking=True,
                 )
                 self.tui.stream_end(tab=worker_id)
                 resp = {

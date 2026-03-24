@@ -242,6 +242,8 @@ def _cmd_prove():
     parser.add_argument("--give-up-after", type=float, default=0.5, metavar="RATIO", help="Fraction of budget before give_up action is allowed (default: 0.5)")
     parser.add_argument("--answer-reserve", type=int, default=4096, metavar="TOKENS", help="Tokens reserved for answer after thinking (default: 4096)")
     parser.add_argument("--history-budget", type=int, default=0, metavar="CHARS", help="Char budget for planner history (default: auto from model context)")
+    parser.add_argument("--effort", choices=["low", "medium", "high", "max"], default=None,
+                        help="Claude reasoning effort level (default: max for opus, high for others; Claude models only)")
     parser.add_argument("--headless", action="store_true", help="Non-interactive mode (logs to stdout, errors to stderr)")
     parser.add_argument("--verbose", action="store_true", help="Show full LLM responses")
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
@@ -359,6 +361,24 @@ def _cmd_prove():
     planner_model = args.planner_model or args.model
     worker_model = args.worker_model or args.model
 
+    # Validate and resolve --effort
+    effort_given = _cli_flag_given("--effort")
+    if effort_given:
+        non_claude = [m for m in (planner_model, worker_model) if m not in CLAUDE_MODELS]
+        if non_claude:
+            parser.error(
+                f"--effort is only supported for Claude models (sonnet, opus); "
+                f"got: {', '.join(non_claude)}"
+            )
+        effective_effort = args.effort
+    else:
+        # Auto-default: highest level for the models in use
+        claude_models_used = [m for m in (planner_model, worker_model) if m in CLAUDE_MODELS]
+        if claude_models_used:
+            effective_effort = "max" if any(m == "opus" for m in claude_models_used) else "high"
+        else:
+            effective_effort = None
+
     # HF-backed models have no web search capability - force isolation
     hf_models = {"minimax-m2.5"}
     if planner_model in hf_models and not args.isolation:
@@ -397,7 +417,7 @@ def _cmd_prove():
             return HFClient(HF_MODEL_MAP[model_alias], archive_dir,
                             base_url=args.provider_url, answer_reserve=args.answer_reserve,
                             vllm=model_alias in VLLM_MODELS)
-        return LLMClient(model_alias, archive_dir)
+        return LLMClient(model_alias, archive_dir, effort=effective_effort)
 
     def make_planner_llm(archive_dir):
         return _make_client(planner_model, archive_dir)

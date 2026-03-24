@@ -21,12 +21,14 @@ class LLMClient:
     context_length = 200_000  # Claude models
 
     def __init__(self, model: str, archive_dir: Path,
-                 max_output_tokens: int = 128_000):
+                 max_output_tokens: int = 128_000,
+                 effort: str | None = None):
         self.model = model
         self.archive_dir = archive_dir
         self.call_count = 0
         self.total_cost = 0.0
         self.max_output_tokens = max_output_tokens
+        self.effort = effort
         self.mcp_config: dict | None = None  # set by Prover for MCP tool-calling
         self._interrupted = threading.Event()
         self._soft_interrupted = threading.Event()
@@ -37,6 +39,8 @@ class LLMClient:
             **os.environ,
             "CLAUDE_CODE_MAX_OUTPUT_TOKENS": str(max_output_tokens),
         }
+        if effort:
+            self._env["CLAUDE_CODE_EFFORT_LEVEL"] = effort
 
     def interrupt(self):
         """Signal all active LLM calls to stop."""
@@ -82,6 +86,7 @@ class LLMClient:
         tool_callback=None,
         tool_start_callback=None,
         max_tokens: int | None = None,  # overrides max_output_tokens for this call
+        no_thinking: bool = False,      # disable extended thinking for this call
     ) -> dict:
         """Make an LLM call and archive it.
 
@@ -144,6 +149,10 @@ class LLMClient:
         env = self._env
         if max_tokens:
             env = {**self._env, "CLAUDE_CODE_MAX_OUTPUT_TOKENS": str(max_tokens)}
+        if no_thinking:
+            env = {**env,
+                   "CLAUDE_CODE_DISABLE_ADAPTIVE_THINKING": "1",
+                   "MAX_THINKING_TOKENS": "0"}
 
         start = time.time()
 

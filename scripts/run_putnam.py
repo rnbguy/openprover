@@ -16,12 +16,9 @@ def _check_tool(name: str) -> None:
     if shutil.which(name) is None:
         print(f"Error: '{name}' not found on PATH.", file=sys.stderr)
         if name == "claude":
-            print(
-                "Install it first: https://docs.anthropic.com/en/docs/claude-cli",
-                file=sys.stderr,
-            )
+            print(f"Install it first: https://docs.anthropic.com/en/docs/claude-cli", file=sys.stderr)
         elif name == "codex":
-            print("Install Codex CLI so 'codex' is available on PATH.", file=sys.stderr)
+            print(f"Install it first: https://openai.com/codex", file=sys.stderr)
         sys.exit(1)
 
 
@@ -32,9 +29,8 @@ def _format_time(seconds: float) -> str:
     return f"{m}m{s:02d}s"
 
 
-def _run_problem(
-    problem_name: str, statement: str, lean_dir: Path, args: argparse.Namespace
-) -> tuple[str, str, float, str]:
+def _run_problem(problem_name: str, statement: str, lean_dir: Path,
+                 args: argparse.Namespace) -> tuple[str, str, float, str]:
     """Run openprover on a single problem via subprocess.
 
     Returns (name, status, elapsed_seconds, error_message).
@@ -44,18 +40,10 @@ def _run_problem(
         f.write(f"{statement}\n")
         theorem_path = f.name
 
-    cmd = [
-        "openprover",
-        "--theorem",
-        theorem_path,
-        "--model",
-        args.model,
-        "--max-time",
-        args.max_time,
-        "--headless",
-        "-P",
-        str(args.parallelism),
-    ]
+    cmd = ["openprover", "--theorem", theorem_path,
+           "--model", args.model,
+           "--max-time", args.max_time, "--headless",
+           "-P", str(args.parallelism)]
 
     if args.planner_model:
         cmd.extend(["--planner-model", args.planner_model])
@@ -84,11 +72,7 @@ def _run_problem(
         result = subprocess.run(cmd, capture_output=True, text=True)
         elapsed = time.monotonic() - start
         if result.returncode != 0:
-            lines = (
-                result.stderr.strip().splitlines()[-3:]
-                if result.stderr
-                else ["unknown error"]
-            )
+            lines = result.stderr.strip().splitlines()[-3:] if result.stderr else ["unknown error"]
             return (problem_name, "error", elapsed, "\n".join(lines))
         if "[result] proved" in result.stdout:
             return (problem_name, "proved", elapsed, "")
@@ -99,9 +83,8 @@ def _run_problem(
         Path(theorem_path).unlink(missing_ok=True)
 
 
-def _run_parallel(
-    problems: dict[str, str], lean_dir: Path, args: argparse.Namespace
-) -> None:
+def _run_parallel(problems: dict[str, str], lean_dir: Path,
+                  args: argparse.Namespace) -> None:
     """Run multiple problems concurrently with progress tracking."""
     total = len(problems)
     proved = 0
@@ -114,10 +97,8 @@ def _run_parallel(
     planner = args.planner_model or args.model
     worker = args.worker_model or args.model
     model_label = planner if planner == worker else f"{planner}/{worker}"
-    print(
-        f"  Putnam Bench: {total} problems, problem_parallelism={args.problem_parallelism},"
-        f" model={model_label}\n"
-    )
+    print(f"  Putnam Bench: {total} problems, problem_parallelism={args.problem_parallelism},"
+          f" model={model_label}\n")
 
     with ThreadPoolExecutor(max_workers=args.problem_parallelism) as pool:
         futures = {
@@ -144,90 +125,46 @@ def _run_parallel(
             if running > 0:
                 counts += f" R:{running}"
 
-            print(
-                f"  [{completed:>{pad}}/{total}]"
-                f"  {name:<{name_width}}"
-                f"  {status_display:<12}"
-                f"  {elapsed_str:>7}"
-                f"  ({counts})"
-            )
+            print(f"  [{completed:>{pad}}/{total}]"
+                  f"  {name:<{name_width}}"
+                  f"  {status_display:<12}"
+                  f"  {elapsed_str:>7}"
+                  f"  ({counts})")
 
             if error:
                 for line in error.strip().splitlines():
                     print(f"           {line}", file=sys.stderr)
 
-    print(
-        f"\n  Results: {proved} proved, {not_proved} not proved,"
-        f" {errors} errors (of {total})"
-    )
+    print(f"\n  Results: {proved} proved, {not_proved} not proved,"
+          f" {errors} errors (of {total})")
 
 
 def main():
     parser = argparse.ArgumentParser(description="Run openprover on Putnam problems")
-    parser.add_argument(
-        "--repo-path",
-        type=Path,
-        default=Path("./PutnamBench"),
-        help="Path to cloned PutnamBench repository (default: ./PutnamBench)",
-    )
-    parser.add_argument(
-        "--problem", help="Specific problem name to run (e.g., putnam_1962_a1)"
-    )
+    parser.add_argument("--repo-path", type=Path, default=Path("./PutnamBench"),
+                        help="Path to cloned PutnamBench repository (default: ./PutnamBench)")
+    parser.add_argument("--problem", help="Specific problem name to run (e.g., putnam_1962_a1)")
     parser.add_argument("--limit", type=int, help="Limit number of problems to run")
-    parser.add_argument(
-        "--problem-parallelism",
-        type=int,
-        default=1,
-        help="Number of concurrent openprover instances (default: 1)",
-    )
-    parser.add_argument(
-        "-P",
-        "--parallelism",
-        type=int,
-        default=1,
-        help="Max parallel workers per spawn step inside openprover (default: 1)",
-    )
+    parser.add_argument("--problem-parallelism", type=int, default=1,
+                        help="Number of concurrent openprover instances (default: 1)")
+    parser.add_argument("-P", "--parallelism", type=int, default=1,
+                        help="Max parallel workers per spawn step inside openprover (default: 1)")
     model_choices = ["sonnet", "opus", "gpt", "minimax-m2.5"]
     parser.add_argument("--model", default="sonnet", choices=model_choices)
-    parser.add_argument(
-        "--planner-model",
-        choices=model_choices,
-        default=None,
-        help="Override model for planner (defaults to --model)",
-    )
-    parser.add_argument(
-        "--worker-model",
-        choices=model_choices,
-        default=None,
-        help="Override model for worker (defaults to --model)",
-    )
-    parser.add_argument(
-        "--provider-url",
-        default="http://localhost:8000",
-        help="Server URL for local models (default: http://localhost:8000)",
-    )
-    parser.add_argument(
-        "--max-time",
-        default="4h",
-        metavar="DURATION",
-        help="Wall-clock time budget per problem, e.g. '30m', '2h' (default: 4h)",
-    )
-    parser.add_argument(
-        "--give-up-after",
-        type=float,
-        default=None,
-        metavar="RATIO",
-        help="Fraction of budget before give_up is allowed (default: 0.5)",
-    )
+    parser.add_argument("--planner-model", choices=model_choices, default=None,
+                        help="Override model for planner (defaults to --model)")
+    parser.add_argument("--worker-model", choices=model_choices, default=None,
+                        help="Override model for worker (defaults to --model)")
+    parser.add_argument("--provider-url", default="http://localhost:8000",
+                        help="Server URL for local models (default: http://localhost:8000)")
+    parser.add_argument("--max-time", default="4h", metavar="DURATION",
+                        help="Wall-clock time budget per problem, e.g. '30m', '2h' (default: 4h)")
+    parser.add_argument("--give-up-after", type=float, default=None, metavar="RATIO",
+                        help="Fraction of budget before give_up is allowed (default: 0.5)")
     parser.add_argument("--autonomous", action="store_true")
-    parser.add_argument(
-        "--informal",
-        action="store_true",
-        help="Skip Lean setup/verification; run openprover without formal checking",
-    )
-    parser.add_argument(
-        "--isolation", action=argparse.BooleanOptionalAction, default=True
-    )
+    parser.add_argument("--informal", action="store_true",
+                        help="Skip Lean setup/verification; run openprover without formal checking")
+    parser.add_argument("--isolation", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--verbose", action="store_true")
     args = parser.parse_args()
 
@@ -271,7 +208,7 @@ def main():
         problems = {args.problem: problems[args.problem]}
 
     if args.limit is not None:
-        problems = dict(list(problems.items())[: args.limit])
+        problems = dict(list(problems.items())[:args.limit])
 
     if args.problem_parallelism > 1:
         _run_parallel(problems, lean_dir, args)
@@ -284,17 +221,10 @@ def main():
             f.write(f"{statement}\n")
             theorem_path = f.name
 
-        cmd = [
-            "openprover",
-            "--theorem",
-            theorem_path,
-            "--model",
-            args.model,
-            "--max-time",
-            args.max_time,
-            "-P",
-            str(args.parallelism),
-        ]
+        cmd = ["openprover", "--theorem", theorem_path,
+               "--model", args.model,
+               "--max-time", args.max_time,
+               "-P", str(args.parallelism)]
 
         if args.planner_model:
             cmd.extend(["--planner-model", args.planner_model])
@@ -307,11 +237,8 @@ def main():
                 cmd.extend(["--lean-project", str(lean_dir)])
                 cmd.extend(["--lean-theorem", str(lean_theorem_path)])
             else:
-                print(
-                    f"Warning: Lean theorem not found at {lean_theorem_path}."
-                    " Running without formal verification.",
-                    file=sys.stderr,
-                )
+                print(f"Warning: Lean theorem not found at {lean_theorem_path}."
+                      " Running without formal verification.", file=sys.stderr)
 
         hf_models = {"minimax-m2.5"}
         used_models = {args.model, args.planner_model, args.worker_model} - {None}

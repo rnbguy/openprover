@@ -36,7 +36,7 @@ inspect.py      Read-only run browser
 - When `--lean-project` is set with a tool-capable worker model, workers have access to `lean_verify` and `lean_search` tools via MCP (Claude and Codex) or native tool calling (vLLM)
 - Report free-form results back to the planner
 
-Public model aliases are resolved in `cli.py`: `sonnet` and `opus` use Claude CLI, `gpt` maps to backend model `gpt-5.4` through `codex app-server`, and `minimax-m2.5` uses the OpenAI-compatible HTTP path. In v1, isolation is forced whenever planner or worker is `gpt`, so Codex runs do not participate in `literature_search`.
+Public model aliases are resolved in `cli.py`: `sonnet` and `opus` use Claude CLI, `gpt` maps to backend model `gpt-5.4` through `codex app-server`, and `minimax-m2.5` uses the OpenAI-compatible HTTP path.
 
 **Repository** (`repo/` directory):
 - Each item is a `.md` file: `Summary: One sentence.\n\nFull content`
@@ -92,7 +92,7 @@ When `lean_worker_tools` is enabled, sets up tool calling for workers:
 | Handler | What it does |
 |---------|-------------|
 | `_handle_spawn` | Run worker tasks in parallel via `ThreadPoolExecutor` (up to `--parallelism`). Each worker gets its task description with wikilinks resolved. Results pushed to output window. |
-| `_handle_literature_search` | Spawn a web-enabled worker (currently Claude CLI with `WebSearch` + `WebFetch` tools). Results fed back to planner. Runs where planner or worker is `gpt` stay isolated in v1, so Codex does not use this path yet. |
+| `_handle_literature_search` | Spawn a web-enabled worker (Claude CLI with `WebSearch` + `WebFetch` tools). Results fed back to planner. |
 | `_handle_read_items` | Fetch full content of requested repo items, push to output. |
 | `_handle_write_items` | Create/update/delete repo items. Items with `format="lean"` are auto-verified via `lake env lean`. |
 | `_handle_write_whiteboard` | Update the whiteboard without spawning workers. |
@@ -175,7 +175,7 @@ Archiving: Every call saved to `archive/calls/call_NNN.json` with full prompt, s
 - Starts each request with `turn/start` using `approvalPolicy = "never"`, ephemeral threads, and `effort: "high"`
 - Streams both normal text and thinking output into the existing OpenProver `text` and `thinking` channels
 - Reuses the same archive path and interrupt semantics as the other clients
-- Ignores `web_search` in the current integration, so Codex planner runs stay isolated in v1
+- Passes `web_search = "live"` in the `thread/start` config when `web_search=True` (i.e. when `--no-isolation` is active and a `literature_search` worker is spawned)
 - This integration is stdio-only (no websocket transport) and does not opt into `experimentalApi`
 
 When `mcp_config` is set on `CodexClient`, it is forwarded to the app-server so Codex workers can reuse the existing Lean MCP server. The current worker allowlist is exactly `lean_verify` and `lean_search` via `mcp_servers.lean_tools`.
@@ -184,7 +184,6 @@ When `mcp_config` is set on `CodexClient`, it is forwarded to the app-server so 
 - `--json-schema` puts structured output in `raw["structured_output"]`, not `raw["result"]`
 - `--tools ""` disables all tools (pure reasoning mode)
 - Cost tracking uses `total_cost_usd` from the Claude CLI response
-- `gpt` is the only public Codex alias today, and it always maps to backend model `gpt-5.4`
 
 ### `prompts.py`
 
@@ -323,29 +322,6 @@ runs/<slug>-<timestamp>/
 
 ## Verification
 
-### Codex smoke checks
-
-These are the verified manual commands for the current `gpt` integration:
-
-```bash
-codex login status
-python scripts/ping_codex.py --prompt "hello"
-openprover --theorem examples/infinite_primes.md --model gpt
-```
-
-`scripts/ping_codex.py` is the dedicated smoke/debug harness for Codex. It performs a `codex login status` preflight before constructing `CodexClient`, then exercises the same stdio app-server path that OpenProver uses.
-
-Definition-of-Done verification commands:
-
-```bash
-codex login status
-python -m py_compile openprover/llm/codex.py openprover/llm/__init__.py openprover/cli.py openprover/prover.py scripts/ping_codex.py scripts/run_putnam.py scripts/run_proofbench.py
-python scripts/ping_codex.py --prompt "Give one sentence proving there are infinitely many primes." --print-reasoning
-python scripts/ping_codex.py --lean-project /absolute/path/to/mathlib4 --prompt "Use lean_search to find Nat.Prime lemmas and summarize them."
-openprover --theorem examples/infinite_primes.md --model gpt --headless --max-time 5m
-python scripts/run_putnam.py --repo-path /absolute/path/to/PutnamBench --problem putnam_1962_a1 --model gpt --max-time 5m --informal --problem-parallelism 1 -P 1
-```
-
 **Informal verification** (all modes): Workers can be tasked with verification by the planner. A verifier worker sees only the proof text (not the reasoning that produced it) and must end its response with `VERDICT: CORRECT` or `VERDICT: INCORRECT`. The planner is instructed to verify proofs before submitting.
 
 **Formal verification** (lean modes): When `--lean-project` is provided, the system supports automatic Lean 4 verification:
@@ -354,7 +330,7 @@ python scripts/run_putnam.py --repo-path /absolute/path/to/PutnamBench --problem
 - **`submit_proof`**: The planner provides N replacement blocks (one per `sorry` in THEOREM.lean) plus optional context. The system assembles the complete file, verifies it, and writes PROOF.lean on success. On failure, compiler errors are fed back.
 - **`read_theorem`**: Returns THEOREM.md, THEOREM.lean, and PROOF.md (if provided) content so the planner can reference the formal statement.
 
-**Worker tools** (when `--lean-worker-tools` is enabled): Workers can directly verify Lean code (`lean_verify`) and search Lean libraries (`lean_search`) during their reasoning. For Codex workers, those tools come from the existing Lean MCP server through `mcp_servers.lean_tools`; `lean_store` is not exposed. Tool calls are shown in the TUI worker tab.
+**Worker tools** (when `--lean-worker-tools` is enabled): Workers can directly verify Lean code (`lean_verify`) and search Lean libraries (`lean_search`) during their reasoning. Tool calls are shown in the TUI worker tab.
 
 Generated Lean files are placed in `<lean-project>/OpenProver-<random_id>/` with `{slug}-{random_suffix}.lean` names to avoid collisions. No `import` statements are allowed in injected code (enforced at assembly time).
 

@@ -96,7 +96,7 @@ class CodexClient:
         max_tokens: int | None = None,
     ) -> dict:
         """Make a Codex call via app-server and archive it."""
-        del json_schema, web_search
+        del json_schema
         del max_tokens
 
         with self._call_lock:
@@ -137,7 +137,9 @@ class CodexClient:
                     "approvalPolicy": "never",
                     "developerInstructions": system_prompt,
                 }
-                if self.mcp_config is not None:
+                if web_search:
+                    thread_start_params["config"] = {"web_search": "live"}
+                elif self.mcp_config is not None:
                     thread_start_params["config"] = self.mcp_config
 
                 thread_resp = self._rpc_request("thread/start", thread_start_params)

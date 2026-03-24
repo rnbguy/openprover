@@ -14,7 +14,7 @@ def test_tui_resize_is_deferred(monkeypatch):
 
     monkeypatch.setattr(
         "openprover.tui.tui.shutil.get_terminal_size",
-        lambda: os.terminal_size((100, 40)),
+        lambda **_: os.terminal_size((100, 40)),
     )
     monkeypatch.setattr(tui, "_write", lambda data: writes.append(data))
     monkeypatch.setattr(tui, "_redraw", lambda: redraws.append("redraw"))
@@ -42,7 +42,7 @@ def test_tui_resize_uses_default_scroll_region_for_tiny_terminal(monkeypatch):
 
     monkeypatch.setattr(
         "openprover.tui.tui.shutil.get_terminal_size",
-        lambda: os.terminal_size((12, 2)),
+        lambda **_: os.terminal_size((12, 2)),
     )
     monkeypatch.setattr(tui, "_write", lambda data: writes.append(data))
     monkeypatch.setattr(tui, "_redraw", lambda: None)
@@ -61,7 +61,7 @@ def test_tui_resize_pending_survives_resize_during_redraw(monkeypatch):
 
     monkeypatch.setattr(
         "openprover.tui.tui.shutil.get_terminal_size",
-        lambda: os.terminal_size((100, 40)),
+        lambda **_: os.terminal_size((100, 40)),
     )
     monkeypatch.setattr(tui, "_write", lambda data: None)
     monkeypatch.setattr(tui, "_redraw", lambda: setattr(tui, "_resize_pending", True))
@@ -80,7 +80,7 @@ def test_inspect_resize_is_deferred(monkeypatch):
 
     monkeypatch.setattr(
         "openprover.inspect.shutil.get_terminal_size",
-        lambda: os.terminal_size((90, 30)),
+        lambda **_: os.terminal_size((90, 30)),
     )
     monkeypatch.setattr(tui, "_draw", lambda: draws.append("draw"))
 
@@ -104,7 +104,7 @@ def test_inspect_resize_pending_survives_resize_during_draw(monkeypatch):
 
     monkeypatch.setattr(
         "openprover.inspect.shutil.get_terminal_size",
-        lambda: os.terminal_size((90, 30)),
+        lambda **_: os.terminal_size((90, 30)),
     )
     monkeypatch.setattr(tui, "_draw", lambda: setattr(tui, "_resize_pending", True))
 

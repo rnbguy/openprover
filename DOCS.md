@@ -13,6 +13,7 @@ inspect.py      Read-only run browser
 llm/
   _base.py      Shared helpers: Interrupted, StreamingUnavailable, archive(), error detection
   claude.py     LLMClient - Claude CLI wrapper (default backend)
+  codex.py      CodexClient - local Codex app-server client
   mistral.py    MistralClient - Mistral Conversations API (Leanstral)
   glm.py        GLMClient - Z.ai OpenAI-compatible API (GLM-5)
   openrouter.py OpenRouterClient - OpenRouter API (Kimi K2.5, MiniMax M2.5/M2.7)
@@ -47,7 +48,7 @@ tui/
 **Workers** (spawned on demand, parallel):
 - Receive a task description from the planner
 - Can reference repo items via `[[wikilink]]` syntax (resolved before sending)
-- When `--lean-project` is set with a tool-capable worker model, workers have access to `lean_verify`, `lean_store`, and `lean_search` tools via MCP (Claude) or native tool calling (other backends)
+- When `--lean-project` is set with a tool-capable worker model, Claude and native workers have `lean_verify`, `lean_store`, and `lean_search`; Codex workers use MCP with only `lean_verify` and `lean_search`
 - Report free-form results back to the planner
 
 **Repository** (`repo/` directory):
@@ -73,8 +74,11 @@ Model routing maps short names to backends:
 - `leanstral` - `MistralClient` (Mistral Conversations API)
 - `glm-5` - `GLMClient` (Z.ai native API)
 - `kimi-k2.5`, `minimax-m2.5`, `minimax-m2.7` - `OpenRouterClient`
+- `gpt` - `CodexClient` using `gpt-5.4` through the local Codex app-server
 
 Run configuration is saved to `run_config.toml` in the work directory on fresh starts and restored on resume. CLI flags override saved values. Version mismatch between the saved config and the running binary is rejected.
+
+Non-Claude planner models force isolation. A `gpt` worker also forces isolation, so Codex does not take part in `literature_search`.
 
 ### `budget.py`
 
@@ -92,6 +96,7 @@ The `Prover` class owns the proving loop and all state.
 
 When `lean_worker_tools` is enabled, sets up tool calling for workers:
 - **Claude CLI workers**: Configures an MCP server (`lean/mcp_server.py`) with `lean_verify`, `lean_store`, and `lean_search` tools
+- **Codex workers**: Reuse `mcp_servers.lean_tools`, require that server, and enable only `lean_verify` and `lean_search`
 - **Other backends**: Initializes LeanExplore search service in-process and uses native OpenAI tool calling
 
 **Step flow** (`run` -> `_do_step`):
@@ -147,7 +152,7 @@ For the Claude CLI path, tool execution is handled by the MCP server subprocess.
 
 ### `llm/`
 
-Five LLM client backends with a shared interface.
+Six LLM client backends with a shared interface.
 
 **Shared interface** (`call` method):
 ```python
@@ -182,6 +187,15 @@ MCP tool calling: When `mcp_config` is set, adds `--mcp-config <json> --strict-m
 - Status is inferred from result text (e.g., `lean_verify` results starting with "OK" = success)
 
 Archiving: Every call saved to `archive/calls/call_NNN.json` with full prompt, system prompt, schema, response, cost, timing, and errors.
+
+**`CodexClient`** (`codex.py`):
+- Backs the public `gpt` alias, mapped to `gpt-5.4`; it requires `codex login`
+- Starts `codex app-server --listen stdio:// --session-source mcp`, using stdio only
+- Completes the `initialize`, `initialized`, and `model/list` handshake with `clientInfo.name = "openprover_codex"`
+- Starts ephemeral threads with `approvalPolicy = "never"` and the system prompt in `developerInstructions`
+- Starts turns at high effort, streams text and reasoning, and sends turn interruptions when OpenProver is interrupted
+- Ignores `web_search`, which is why Codex runs remain isolated
+- For Lean workers, forwards `mcp_servers.lean_tools` as a required server and enables only `lean_verify` and `lean_search`; Codex does not expose `lean_store`
 
 **`MistralClient`** (`mistral.py`):
 - Uses the Mistral Conversations API, which persists context server-side

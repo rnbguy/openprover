@@ -4,7 +4,7 @@
 
 Theorem prover powered by language models.
 
-A **planner** coordinates proof search by maintaining a whiteboard and repository, delegating focused tasks to parallel **workers**. Supports multiple LLM backends: Claude CLI, Mistral (Leanstral), GLM, OpenRouter-hosted models, and local models via vLLM.
+A **planner** coordinates proof search by maintaining a whiteboard and repository, delegating focused tasks to parallel **workers**. Supports multiple LLM backends: Claude CLI, Codex app-server, Mistral (Leanstral), GLM, OpenRouter-hosted models, and local models via vLLM.
 
 ## How it works
 
@@ -24,6 +24,7 @@ Modes:
 
 - Python 3.10+
 - **Claude** (default): [Claude Code](https://docs.anthropic.com/en/docs/claude-code) (`claude` command on PATH)
+- **Codex** (alternative): `codex` command on PATH and `codex login` completed; the public `gpt` alias maps to `gpt-5.4` through a local `codex app-server` stdio connection
 - **Leanstral** (alternative): Mistral's Lean-specialized model; requires `MISTRAL_API_KEY` (get one at https://console.mistral.ai/)
 - **GLM** (alternative): requires `GLM_API_KEY`
 - **OpenRouter** (alternative): Kimi K2.5, MiniMax M2.5/M2.7; requires `OPENROUTER_API_KEY`
@@ -74,6 +75,9 @@ openprover --theorem examples/cauchy_schwarz.md --model leanstral
 
 # Use GLM-5
 openprover --theorem examples/cauchy_schwarz.md --model glm-5
+
+# Use GPT through the local Codex app-server
+openprover --theorem examples/infinite_primes.md --model gpt
 
 # Use Kimi K2.5 via OpenRouter
 openprover --theorem examples/cauchy_schwarz.md --model kimi-k2.5
@@ -130,7 +134,7 @@ openprover --theorem examples/addition.md \
 | `--provider-url` | `http://localhost:8000` | Server URL for local models |
 | `--answer-reserve` | `4096` | Tokens reserved for answer after thinking (local models) |
 
-Available models: `sonnet`, `opus` (Claude); `leanstral` (Mistral, requires `MISTRAL_API_KEY`); `glm-5` (requires `GLM_API_KEY`); `kimi-k2.5`, `minimax-m2.5`, `minimax-m2.7` (OpenRouter, requires `OPENROUTER_API_KEY`). For local models, pass any model name supported by your server together with `--provider-url`.
+Available models: `sonnet`, `opus` (Claude); `gpt` (Codex, maps to `gpt-5.4` and requires `codex login`); `leanstral` (Mistral, requires `MISTRAL_API_KEY`); `glm-5` (requires `GLM_API_KEY`); `kimi-k2.5`, `minimax-m2.5`, `minimax-m2.7` (OpenRouter, requires `OPENROUTER_API_KEY`). For local models, pass any model name supported by your server together with `--provider-url`. Non-Claude planner models, including `gpt`, force isolation; a `gpt` worker also forces isolation.
 
 ### TUI controls
 
@@ -230,6 +234,8 @@ When `--lean-project` is set with a tool-capable worker model, workers get acces
 | `lean_search(query)` | Search Mathlib/Lean declarations by name or natural language query |
 
 Tools are provided via MCP (Claude workers) or native tool calling (vLLM/OpenRouter/GLM workers). Actions are shown in the worker tab and can be browsed with arrow keys.
+
+Codex workers reuse the Lean MCP server but expose only `lean_verify` and `lean_search`. Claude and native providers can also use `lean_store`.
 
 ## Output
 

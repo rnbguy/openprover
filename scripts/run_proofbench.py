@@ -3,21 +3,12 @@
 
 import argparse
 import csv
-import shutil
 import subprocess
 import sys
 import tempfile
 from pathlib import Path
 
 PROOFBENCH_CSV = Path(__file__).resolve().parent.parent / "examples" / "proofbench.csv"
-
-
-def _check_tool(name: str) -> None:
-    if shutil.which(name) is None:
-        print(f"Error: '{name}' not found on PATH.", file=sys.stderr)
-        if name == "codex":
-            print("Install Codex CLI so 'codex' is available on PATH.", file=sys.stderr)
-        sys.exit(1)
 
 
 def load_problems(csv_path: Path) -> dict[str, dict]:
@@ -57,9 +48,6 @@ def main():
 
     row = problems[args.problem]
     statement = row["Problem"]
-
-    if args.model == "gpt":
-        _check_tool("codex")
 
     # Write problem statement to a temp file and invoke openprover
     with tempfile.NamedTemporaryFile(mode="w", suffix=".md", delete=False) as f:

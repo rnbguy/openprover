@@ -134,7 +134,7 @@ openprover --theorem examples/addition.md \
 | `--provider-url` | `http://localhost:8000` | Server URL for local models |
 | `--answer-reserve` | `4096` | Tokens reserved for answer after thinking (local models) |
 
-Available models: `sonnet`, `opus` (Claude); `gpt` (Codex, maps to `gpt-5.4` and requires `codex login`); `leanstral` (Mistral, requires `MISTRAL_API_KEY`); `glm-5` (requires `GLM_API_KEY`); `kimi-k2.5`, `minimax-m2.5`, `minimax-m2.7` (OpenRouter, requires `OPENROUTER_API_KEY`). For local models, pass any model name supported by your server together with `--provider-url`. Non-Claude planner models, including `gpt`, force isolation; a `gpt` worker also forces isolation.
+Available models: `sonnet`, `opus` (Claude); `gpt` (Codex, maps to `gpt-5.4` and requires `codex login`); `leanstral` (Mistral, requires `MISTRAL_API_KEY`); `glm-5` (requires `GLM_API_KEY`); `kimi-k2.5`, `minimax-m2.5`, `minimax-m2.7` (OpenRouter, requires `OPENROUTER_API_KEY`). For local models, pass any model name supported by your server together with `--provider-url`. Under `--no-isolation`, literature search requires a Claude or Codex worker; other worker backends force isolation.
 
 ### TUI controls
 

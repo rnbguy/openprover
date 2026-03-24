@@ -418,9 +418,8 @@ def _cmd_prove():
                 f"got: {', '.join(non_claude)}"
             )
 
-    # Non-Claude models have no web search capability - force isolation
-    non_claude_models = {"leanstral"} | CODEX_MODELS | GLM_MODELS | OPENROUTER_MODELS
-    if (planner_model in non_claude_models or worker_model in CODEX_MODELS) and not args.isolation:
+    # Literature search calls worker_llm, so require worker web-search support.
+    if worker_model not in (CLAUDE_MODELS | CODEX_MODELS) and not args.isolation:
         args.isolation = True
 
     if args.headless:

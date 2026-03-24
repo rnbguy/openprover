@@ -78,7 +78,7 @@ Model routing maps short names to backends:
 
 Run configuration is saved to `run_config.toml` in the work directory on fresh starts and restored on resume. CLI flags override saved values. Version mismatch between the saved config and the running binary is rejected.
 
-Non-Claude planner models force isolation. A `gpt` worker also forces isolation, so Codex does not take part in `literature_search`.
+Isolation depends on worker web-search capability: `_handle_literature_search` calls `worker_llm`, so `--no-isolation` works with Claude (`sonnet`/`opus`) or Codex (`gpt`) workers. Mistral, GLM, OpenRouter, and local HF/vLLM workers force isolation.
 
 ### `budget.py`
 
@@ -114,7 +114,7 @@ When `lean_worker_tools` is enabled, sets up tool calling for workers:
 | Handler | What it does |
 |---------|-------------|
 | `_handle_spawn` | Run worker tasks in parallel via `ThreadPoolExecutor` (up to `--max-workers`). Each worker gets its task description with wikilinks resolved. Results pushed to output window. |
-| `_handle_literature_search` | Spawn a web-enabled worker (Claude CLI with `WebSearch` + `WebFetch` tools). Results fed back to planner. |
+| `_handle_literature_search` | Spawn a web-enabled `worker_llm`: Claude uses `WebSearch` + `WebFetch`; Codex app-server uses live search. Results fed back to planner. |
 | `_handle_read_items` | Fetch full content of requested repo items, push to output. |
 | `_handle_write_items` | Create/update/delete repo items. Items with `format="lean"` are auto-verified via `lake env lean`. |
 | `_handle_write_whiteboard` | Update the whiteboard without spawning workers. |
@@ -194,7 +194,7 @@ Archiving: Every call saved to `archive/calls/call_NNN.json` with full prompt, s
 - Completes the `initialize`, `initialized`, and `model/list` handshake with `clientInfo.name = "openprover_codex"`
 - Starts ephemeral threads with `approvalPolicy = "never"` and the system prompt in `developerInstructions`
 - Starts turns at high effort, streams text and reasoning, and sends turn interruptions when OpenProver is interrupted
-- Ignores `web_search`, which is why Codex runs remain isolated
+- Maps `web_search=True` to app-server `thread/start` `config.web_search = "live"`
 - For Lean workers, forwards `mcp_servers.lean_tools` as a required server and enables only `lean_verify` and `lean_search`; Codex does not expose `lean_store`
 
 **`MistralClient`** (`mistral.py`):

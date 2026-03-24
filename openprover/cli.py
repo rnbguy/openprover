@@ -11,7 +11,7 @@ from pathlib import Path
 
 from openprover import __version__
 from .budget import Budget, parse_duration
-from .llm import LLMClient, GLMClient, HFClient, MistralClient, OpenRouterClient
+from .llm import CodexClient, LLMClient, GLMClient, HFClient, MistralClient, OpenRouterClient
 from .prover import Prover, slugify
 from .tui import TUI, HeadlessTUI
 
@@ -231,7 +231,7 @@ def _cmd_prove():
         prog="openprover",
         description="Theorem prover powered by language models",
     )
-    model_choices = ["sonnet", "opus", "minimax-m2.5", "leanstral", "glm-5", "kimi-k2.5", "minimax-m2.7"]
+    model_choices = ["sonnet", "opus", "gpt", "minimax-m2.5", "leanstral", "glm-5", "kimi-k2.5", "minimax-m2.7"]
     parser.add_argument("run_dir", nargs="?", help="Working directory (resumes if it contains an existing run)")
     parser.add_argument("--theorem", metavar="FILE", help="Path to theorem statement file (.md)")
     parser.add_argument("--model", default="sonnet", choices=model_choices, help="Model to use for both planner and worker (default: sonnet)")
@@ -314,10 +314,11 @@ def _cmd_prove():
     VLLM_MODELS: set[str] = set()  # vLLM-served local models (currently none)
     MISTRAL_MODELS = {"leanstral"}  # Mistral Conversations API
     CLAUDE_MODELS = {"sonnet", "opus"}
+    CODEX_MODELS = {"gpt"}
     GLM_MODELS = set(GLM_MODEL_MAP)
     OPENROUTER_MODELS = set(OPENROUTER_MODEL_MAP)
     TOOL_CAPABLE_MODELS = (VLLM_MODELS | CLAUDE_MODELS | MISTRAL_MODELS
-                           | GLM_MODELS | OPENROUTER_MODELS)
+                           | CODEX_MODELS | GLM_MODELS | OPENROUTER_MODELS)
 
     # ── On resume, load saved config and apply as defaults ──
     if resuming:
@@ -418,8 +419,8 @@ def _cmd_prove():
             )
 
     # Non-Claude models have no web search capability - force isolation
-    non_claude_models = {"leanstral"} | GLM_MODELS | OPENROUTER_MODELS
-    if planner_model in non_claude_models and not args.isolation:
+    non_claude_models = {"leanstral"} | CODEX_MODELS | GLM_MODELS | OPENROUTER_MODELS
+    if (planner_model in non_claude_models or worker_model in CODEX_MODELS) and not args.isolation:
         args.isolation = True
 
     if args.headless:
@@ -441,7 +442,7 @@ def _cmd_prove():
         if not args.lean_project:
             parser.error("--lean-worker-tools requires --lean-project")
         if worker_model not in TOOL_CAPABLE_MODELS:
-            parser.error("--lean-worker-tools requires a tool-capable worker model (sonnet, opus, minimax-m2.5, leanstral, glm-5, kimi-k2.5, or minimax-m2.7)")
+            parser.error("--lean-worker-tools requires a tool-capable worker model (sonnet, opus, gpt, minimax-m2.5, leanstral, glm-5, kimi-k2.5, or minimax-m2.7)")
         # Auto-fetch Lean Explore data if not available
         from .lean.data import is_lean_data_available, fetch_lean_data
         if not is_lean_data_available():
@@ -451,6 +452,8 @@ def _cmd_prove():
                 print("Warning: lean_search will not be available")
 
     def _make_client(model_alias, archive_dir):
+        if model_alias in CODEX_MODELS:
+            return CodexClient("gpt-5.4", archive_dir)
         if model_alias in MISTRAL_MODEL_MAP:
             return MistralClient(MISTRAL_MODEL_MAP[model_alias], archive_dir,
                                  answer_reserve=args.answer_reserve)
@@ -481,7 +484,7 @@ def _cmd_prove():
     def make_worker_llm(archive_dir):
         return _make_client(worker_model, archive_dir)
 
-    MODEL_DISPLAY = {"sonnet": "sonnet 4.6", "opus": "opus 4.6", "leanstral": "leanstral", "glm-5": "glm-5", "kimi-k2.5": "kimi-k2.5", "minimax-m2.7": "minimax-m2.7"}
+    MODEL_DISPLAY = {"sonnet": "sonnet 4.6", "opus": "opus 4.6", "gpt": "gpt 5.4", "leanstral": "leanstral", "glm-5": "glm-5", "kimi-k2.5": "kimi-k2.5", "minimax-m2.7": "minimax-m2.7"}
     _p = MODEL_DISPLAY.get(planner_model, planner_model)
     _w = MODEL_DISPLAY.get(worker_model, worker_model)
     model_label = _p if planner_model == worker_model else f"{_p}/{_w}"

@@ -372,7 +372,7 @@ def planner_system_prompt(*, isolation: bool = False,
         "Planner decisions should be fast - you should rarely need more than a few seconds of thought "
         "to decide what to do next. "
         "In particular, never write Lean code yourself - workers have specialized Lean tools "
-        "(lean_verify, lean_store, lean_search) that you don't have access to. "
+        "(lean_verify and lean_search, plus lean_store only on supported tool paths) that you don't have access to. "
         "Delegate all formalization work to workers.\n"
         "\n"
         "---\n"
@@ -454,7 +454,8 @@ def planner_system_prompt(*, isolation: bool = False,
         f"{toml_fields}"
     )
 
-def worker_system_prompt(*, lean_worker_tools: bool = False) -> str:
+def worker_system_prompt(*, lean_worker_tools: bool = False,
+                         lean_store_available: bool = False) -> str:
     """Build worker system prompt, optionally documenting tool actions."""
     base = (
         "You are a research mathematician working on a specific task.\n"
@@ -490,6 +491,23 @@ def worker_system_prompt(*, lean_worker_tools: bool = False) -> str:
         "Your thinking budget is for exploration; your output is for results.\n"
     )
     if lean_worker_tools:
+        if not lean_store_available:
+            return base + (
+                "\n"
+                "## Available Tools\n"
+                "\n"
+                "You have access to the following tools:\n"
+                "\n"
+                "- **lean_verify(code)**: Verify Lean 4 code. Returns 'OK' on success "
+                "or compiler errors on failure.\n"
+                "\n"
+                "- **lean_search(query)**: Search Lean 4 declarations across Batteries, "
+                "Init, Lean, Mathlib, and Std by name or meaning. Query with a declaration "
+                "name or a natural language description.\n"
+                "\n"
+                "Build proofs one small lemma at a time. Verify each step, and break "
+                "complex lemmas into independently verifiable sub-lemmas.\n"
+            )
         base += (
             "\n"
             "## Available Tools\n"

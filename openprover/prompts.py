@@ -120,7 +120,7 @@ def _build_principles(*, lean_mode: str, has_lean: bool,
     )
     if not isolation:
         principles += (
-            "- Use literature_search sparingly (2-3 times max). Store results in the repo immediately.\n"
+            "- Use literature_search sparingly (2-3 times max). After a literature search, the very next step must process the results: update the whiteboard with key findings and revised strategy, and write relevant results to the repo.\n"
             "- **Never spawn workers for literature search or recall.** Workers have no web access and no knowledge of specific theorems or papers - "
             "they will hallucinate citations. To find existing results, use the `literature_search` action (a planner-level action that spawns a web-enabled worker). "
             "Only spawn regular workers for doing original mathematical reasoning.\n"

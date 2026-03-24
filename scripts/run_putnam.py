@@ -15,7 +15,10 @@ from pathlib import Path
 def _check_tool(name: str) -> None:
     if shutil.which(name) is None:
         print(f"Error: '{name}' not found on PATH.", file=sys.stderr)
-        print(f"Install it first: https://docs.anthropic.com/en/docs/claude-cli", file=sys.stderr)
+        if name == "claude":
+            print(f"Install it first: https://docs.anthropic.com/en/docs/claude-cli", file=sys.stderr)
+        elif name == "codex":
+            print("Install Codex CLI so 'codex' is available on PATH.", file=sys.stderr)
         sys.exit(1)
 
 
@@ -148,7 +151,7 @@ def main():
     parser.add_argument("-P", "--max-workers", type=int, default=1,
                         help="Max parallel workers per spawn step inside "
                              "openprover (default: 1).")
-    model_choices = ["sonnet", "opus", "minimax-m2.5", "leanstral"]
+    model_choices = ["sonnet", "opus", "gpt", "minimax-m2.5", "leanstral"]
     parser.add_argument("--model", default="sonnet", choices=model_choices)
     parser.add_argument("--planner-model", choices=model_choices, default=None,
                         help="Override model for planner (defaults to --model)")
@@ -195,6 +198,8 @@ def main():
     all_models = {args.model, args.planner_model, args.worker_model} - {None}
     if all_models & {"sonnet", "opus"}:
         _check_tool("claude")
+    if all_models & {"gpt"}:
+        _check_tool("codex")
 
     if args.problem:
         if args.problem not in problems:

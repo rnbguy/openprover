@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""Ping the Mistral API with a sample message and print the response."""
+"""Ping the Mistral API with a sample message and print the response.
+
+Leanstral supports explicit reasoning via reasoning_effort='high' (temperature
+must be 1.0). Reasoning tokens are returned in a separate 'reasoning' field.
+"""
 
 import argparse
 import json
@@ -73,12 +77,11 @@ def main():
                         help="Prompt to send")
     parser.add_argument("--max-tokens", type=int, default=2048)
     parser.add_argument("--temperature", type=float, default=0.7)
+    parser.add_argument("--reasoning-effort", choices=["none", "high"], default=None,
+                        help="Enable reasoning (forces temperature=1.0)")
     parser.add_argument("--stream", action=argparse.BooleanOptionalAction,
                         default=True,
                         help="Stream tokens to console (default: true)")
-    parser.add_argument("--print-reasoning", action=argparse.BooleanOptionalAction,
-                        default=True,
-                        help="Print reasoning/thinking tokens when present (default: true)")
     parser.add_argument("--example-tool", action=argparse.BooleanOptionalAction,
                         default=False,
                         help="Include a sample calculator tool in request (default: false)")
@@ -94,17 +97,21 @@ def main():
 
     tools = [build_example_calculator_tool()] if args.example_tool else []
 
+    temperature = 1.0 if args.reasoning_effort == "high" else args.temperature
+    completion_args = {
+        "temperature": temperature,
+        "max_tokens": args.max_tokens,
+        "top_p": 1,
+    }
+    if args.reasoning_effort:
+        completion_args["reasoning_effort"] = args.reasoning_effort
+
     payload = json.dumps({
         "model": args.model,
         "inputs": [{"role": "user", "content": args.prompt}],
         "tools": tools,
         "stream": args.stream,
-        "completion_args": {
-            "temperature": args.temperature,
-            "max_tokens": args.max_tokens,
-            "top_p": 1,
-        },
-        "instructions": "",
+        "completion_args": completion_args,
     }).encode()
 
     req = urllib.request.Request(
@@ -117,9 +124,12 @@ def main():
     )
 
     print(f"Model:  {args.model}")
+    if args.reasoning_effort:
+        print(f"Reasoning: {args.reasoning_effort}  (temperature forced to 1.0)")
     if args.example_tool:
         print("Tools:  calculator")
-    print(f"Prompt: {args.prompt}")
+    print("─" * 60)
+    print(f"[User] {args.prompt}")
     print("─" * 60)
 
     try:
@@ -133,12 +143,12 @@ def main():
         sys.exit(1)
 
     usage = {}
+    dim = "\033[2m" if sys.stdout.isatty() else ""
+    reset = "\033[0m" if sys.stdout.isatty() else ""
 
     if args.stream:
-        saw_reasoning = False
         tool_calls_by_index = {}
-        dim = "\033[2m" if sys.stdout.isatty() else ""
-        reset = "\033[0m" if sys.stdout.isatty() else ""
+        in_reasoning = False
 
         for line in resp:
             line = line.decode(errors="replace").strip()
@@ -151,9 +161,7 @@ def main():
                 break
             try:
                 chunk = json.loads(data_str)
-            except json.JSONDecodeError as e:
-                if args.debug_stream:
-                    print(f"[debug] JSON error: {e}", file=sys.stderr)
+            except json.JSONDecodeError:
                 continue
             if args.debug_stream:
                 print(f"[debug] chunk keys: {list(chunk.keys())}", file=sys.stderr)
@@ -161,33 +169,41 @@ def main():
             if "usage" in chunk:
                 usage = chunk["usage"]
 
-            event_type = chunk.get("type", "")
+            if chunk.get("type") != "message.output.delta":
+                continue
 
-            # message.output.delta: content/reasoning/tool_calls at top level
-            if event_type == "message.output.delta":
-                content = chunk.get("content", "")
-                reasoning = (chunk.get("thinking") or chunk.get("reasoning")
-                             or chunk.get("reasoning_content") or "")
-                delta_tool_calls = chunk.get("tool_calls") or []
-                merge_stream_tool_calls(tool_calls_by_index, delta_tool_calls)
-            else:
-                content = ""
-                reasoning = ""
+            content = chunk.get("content", "")
+            reasoning_token = ""
+            content_token = ""
+            if isinstance(content, str):
+                content_token = content
+            elif isinstance(content, dict):
+                ctype = content.get("type", "")
+                if ctype == "thinking":
+                    for part in content.get("thinking", []):
+                        reasoning_token += part.get("text", "")
+                else:
+                    for part in content.get("content", []):
+                        content_token += part.get("text", "")
+                    if not content_token:
+                        content_token = content.get("text", "")
 
-            if content:
-                if saw_reasoning:
-                    sys.stdout.write(reset)
-                    saw_reasoning = False
-                sys.stdout.write(content)
-                sys.stdout.flush()
-            elif args.print_reasoning and reasoning:
-                if not saw_reasoning:
+            if reasoning_token:
+                if not in_reasoning:
                     sys.stdout.write(dim)
-                    saw_reasoning = True
-                sys.stdout.write(reasoning)
+                    in_reasoning = True
+                sys.stdout.write(reasoning_token)
+                sys.stdout.flush()
+            if content_token:
+                if in_reasoning:
+                    sys.stdout.write(reset)
+                    in_reasoning = False
+                sys.stdout.write(content_token)
                 sys.stdout.flush()
 
-        if saw_reasoning:
+            merge_stream_tool_calls(tool_calls_by_index, chunk.get("tool_calls") or [])
+
+        if in_reasoning:
             sys.stdout.write(reset)
         print()
 
@@ -199,18 +215,15 @@ def main():
         if args.debug_stream:
             print(f"[debug] response keys: {list(data.keys())}", file=sys.stderr)
         usage = data.get("usage", {})
-        outputs = data.get("outputs", [])
         tool_calls = []
-        for entry in outputs:
-            if entry.get("role") == "assistant":
-                thinking = (entry.get("thinking") or entry.get("reasoning")
-                            or entry.get("reasoning_content") or "")
-                if args.print_reasoning and thinking:
-                    dim = "\033[2m" if sys.stdout.isatty() else ""
-                    reset = "\033[0m" if sys.stdout.isatty() else ""
-                    print(f"{dim}{thinking}{reset}")
-                print(entry.get("content", ""))
-                tool_calls.extend(entry.get("tool_calls") or [])
+        for entry in data.get("outputs", []):
+            if entry.get("role") != "assistant":
+                continue
+            reasoning = entry.get("reasoning", "")
+            if reasoning:
+                print(f"{dim}{reasoning}{reset}")
+            print(entry.get("content", ""))
+            tool_calls.extend(entry.get("tool_calls") or [])
         print_tool_calls(tool_calls)
 
     print("─" * 60)

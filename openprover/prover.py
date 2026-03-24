@@ -14,7 +14,7 @@ from pathlib import Path
 from . import prompts
 from .budget import Budget
 from .lean import LeanTheorem, LeanWorkDir, run_lean_check, lean_has_errors, WORKER_TOOLS, execute_worker_tool
-from .llm import Interrupted, LLMClient
+from .llm import Interrupted, CodexClient, LLMClient
 from .llm._base import is_transient_error
 from .tui import TUI
 from .tui._colors import YELLOW, GREEN, RESET as _RESET
@@ -318,6 +318,27 @@ class Prover:
                 }
                 self.worker_llm.mcp_config = mcp_config
                 logger.info("Claude MCP tool calling configured")
+            elif isinstance(self.worker_llm, CodexClient):
+                mcp_config = {
+                    "mcp_servers": {
+                        "lean_tools": {
+                            "command": sys.executable,
+                            "args": ["-m", "openprover.lean.mcp_server"],
+                            "env": {
+                                "LEAN_PROJECT_DIR": str(
+                                    self.lean_project_dir.resolve()),
+                                "LEAN_WORK_DIR": str(
+                                    self.lean_work_dir.dir.resolve()
+                                    if self.lean_work_dir else ""),
+                            },
+                            "enabled_tools": ["lean_verify", "lean_search"],
+                            "required": True,
+                            "startup_timeout_ms": 30000,
+                        }
+                    }
+                }
+                self.worker_llm.mcp_config = mcp_config
+                logger.info("Codex MCP tool calling configured")
             elif getattr(self.worker_llm, 'vllm', False) or getattr(self.worker_llm, 'mistral', False):
                 # vLLM / Mistral: initialize LeanExplore for in-process tool execution
                 try:
@@ -1774,7 +1795,10 @@ class Prover:
         use_mistral_tools = self.lean_worker_tools and getattr(self.worker_llm, 'mistral', False)
         use_mcp_tools = self.lean_worker_tools and getattr(self.worker_llm, 'mcp_config', None)
         use_tools = use_vllm_tools or use_mistral_tools or use_mcp_tools
-        system_prompt = prompts.worker_system_prompt(lean_worker_tools=use_tools)
+        system_prompt = prompts.worker_system_prompt(
+            lean_worker_tools=bool(use_tools),
+            lean_store_available=bool(use_vllm_tools or use_mistral_tools),
+        )
 
         if use_vllm_tools or use_mistral_tools:
             return self._run_worker_multi_turn(

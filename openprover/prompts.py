@@ -455,6 +455,11 @@ def worker_system_prompt(*, lean_worker_tools: bool = False) -> str:
         "\n"
         "IMPORTANT: You are a single worker. Do NOT attempt to spawn subagents, delegate to other workers, "
         "or \"launch agents in parallel\". You do all the work yourself, directly in your response.\n"
+        "\n"
+        "IMPORTANT: All reasoning must happen in your thinking trace, not in your output. "
+        "When writing your response, write the final answer directly — do not re-reason, backtrack, "
+        "hedge with \"let me reconsider\", or narrate your thought process. "
+        "Your thinking budget is for exploration; your output is for results.\n"
     )
     if lean_worker_tools:
         base += (

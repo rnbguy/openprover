@@ -1525,7 +1525,8 @@ class Prover:
                 phase2_max = answer_reserve or 16_000
                 phase2_prompt = (
                     f"{prompt}\n\n---\n\n"
-                    f"Your previous reasoning was cut off. Continue with your final answer.\n\n"
+                    f"Your previous reasoning was cut off. Write your final answer now. "
+                    f"Output only the answer — no re-reasoning, no backtracking, no narration.\n\n"
                     f"Previous output (last 2000 chars):\n"
                     f"```\n{resp['result'][-2000:]}\n```"
                 )

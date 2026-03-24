@@ -158,9 +158,15 @@ class MistralClient:
         web_search: bool = False,
         stream_callback=None,
         archive_path: Path | None = None,
+        tool_callback=None,
+        tool_start_callback=None,
         max_tokens: int | None = None,
     ) -> dict:
-        """Single-turn call. Same interface as LLMClient.call()."""
+        """Single-turn call. Same interface as LLMClient.call().
+
+        tool_callback and tool_start_callback are accepted for interface
+        compatibility but ignored (Mistral tool calling uses chat()).
+        """
         self.call_count += 1
         call_num = self.call_count
 

@@ -4,7 +4,7 @@
 
 Theorem prover powered by language models.
 
-A **planner** coordinates proof search by maintaining a whiteboard and repository, delegating focused tasks to parallel **workers** via Claude CLI or local models (vLLM).
+A **planner** coordinates proof search by maintaining a whiteboard and repository, delegating focused tasks to parallel **workers** via Claude CLI, the local Codex app-server, or local OpenAI-compatible models such as vLLM.
 
 ## How it works
 
@@ -12,7 +12,7 @@ You give it a theorem statement (a `.md` file). A planner LLM maintains a **whit
 
 Workers run in parallel (up to `-P` at a time), each focused on a single task. They can reference repository items via `[[wikilinks]]`. Results flow back to the planner, which updates the whiteboard and decides the next step.
 
-With `--lean-project`, workers get access to **lean_verify** (compile Lean 4 code) and **lean_search** (search Mathlib/Lean declarations) tools, enabling interactive formal proof development.
+With `--lean-project`, workers get access to **lean_verify** (compile Lean 4 code) and **lean_search** (search Mathlib/Lean declarations) tools, enabling interactive formal proof development. For `gpt`, OpenProver reuses the existing Lean MCP server and exposes only `lean_verify` and `lean_search`.
 
 Modes:
 - **Interactive** (default): see each step's plan, accept or give feedback
@@ -20,11 +20,14 @@ Modes:
 - **Isolation** (default) / **No-isolation** (`--no-isolation`): by default, workers have no web access. With `--no-isolation`, the planner can use `literature_search` to find relevant papers and results online
 - **Formal verification** (`--lean-project`): proof attempts are verified via `lake env lean`, workers can verify code and search Lean libraries
 
+`gpt` is the public Codex-backed model alias. OpenProver maps it to backend model `gpt-5.4` and talks to a locally spawned `codex app-server` over stdio JSON-RPC. In v1, any run with `gpt` as planner or worker is forced to isolation, so Codex does not participate in OpenProver's `literature_search` flow yet.
+
 ## Requirements
 
 - Python 3.10+
-- **Claude** (default): [Claude Code](https://docs.anthropic.com/en/docs/claude-code) (`claude` command on PATH)
-- **Local models** (alternative): any OpenAI-compatible server such as [vLLM](https://github.com/vllm-project/vllm); pass `--provider-url` to point at it
+- **Claude**: [Claude Code](https://docs.anthropic.com/en/docs/claude-code) (`claude` command on PATH) for `sonnet` and `opus`
+- **Codex**: `codex` command on PATH, plus `codex login` completed for the public `gpt` alias (`gpt -> gpt-5.4` via `codex app-server`)
+- **Local models**: any OpenAI-compatible server such as [vLLM](https://github.com/vllm-project/vllm); use `--provider-url` only for those local models
 
 ## Install
 
@@ -43,6 +46,42 @@ pip install -e .
 For Lean search support (optional):
 ```bash
 openprover fetch-lean-data
+```
+
+## Codex setup and smoke checks
+
+For `--model gpt`, authenticate the local Codex CLI first:
+
+```bash
+codex login
+codex login status
+```
+
+The basic Codex smoke/debug harness is:
+
+```bash
+python scripts/ping_codex.py --prompt "hello"
+```
+
+Representative end-to-end usage:
+
+```bash
+openprover --theorem examples/infinite_primes.md --model gpt
+```
+
+`scripts/ping_codex.py` is the first thing to run when `gpt` setup looks wrong. It performs the `codex login status` preflight, talks to `codex app-server` over stdio, streams both text and thinking output, and can be pointed at a Lean project to exercise `lean_search` and `lean_verify`.
+
+OpenProver follows the first-party app-server client pattern for Codex: stable `clientInfo.name = "openprover_codex"`, stdio transport only (no websocket support in this integration), and no `experimentalApi` opt-in.
+
+Definition-of-Done verification commands:
+
+```bash
+codex login status
+python -m py_compile openprover/llm/codex.py openprover/llm/__init__.py openprover/cli.py openprover/prover.py scripts/ping_codex.py scripts/run_putnam.py scripts/run_proofbench.py
+python scripts/ping_codex.py --prompt "Give one sentence proving there are infinitely many primes." --print-reasoning
+python scripts/ping_codex.py --lean-project /absolute/path/to/mathlib4 --prompt "Use lean_search to find Nat.Prime lemmas and summarize them."
+openprover --theorem examples/infinite_primes.md --model gpt --headless --max-time 5m
+python scripts/run_putnam.py --repo-path /absolute/path/to/PutnamBench --problem putnam_1962_a1 --model gpt --max-time 5m --informal --problem-parallelism 1 -P 1
 ```
 
 ## Usage
@@ -68,6 +107,9 @@ openprover --theorem examples/cauchy_schwarz.md --no-isolation
 
 # Use a local model (via vLLM)
 openprover --theorem examples/infinite_primes.md --model minimax-m2.5 --provider-url http://localhost:8000
+
+# Use GPT via the local Codex app-server
+openprover --theorem examples/infinite_primes.md --model gpt
 
 # Prove and formalize in Lean 4
 openprover --theorem examples/addition.md \
@@ -111,10 +153,10 @@ openprover --theorem examples/addition.md \
 | `--headless` | off | Non-interactive mode (logs to stdout, implies `--autonomous`) |
 | `--verbose` | off | Show full LLM responses |
 | `--read-only` | off | Inspect run without resuming |
-| `--provider-url` | `http://localhost:8000` | Server URL for local models |
-| `--answer-reserve` | `4096` | Tokens reserved for answer after thinking (local models) |
+| `--provider-url` | `http://localhost:8000` | Server URL for local OpenAI-compatible models only |
+| `--answer-reserve` | `4096` | Tokens reserved for answer after thinking (local models only) |
 
-Available Claude models: `sonnet`, `opus`. For local models, pass any model name supported by your OpenAI-compatible server (e.g. `minimax-m2.5`) together with `--provider-url`.
+Available built-in model aliases: `sonnet`, `opus`, `gpt`, `minimax-m2.5`. `gpt` maps to backend model `gpt-5.4` via a local `codex app-server` session and requires `codex login`. `--provider-url` is only for local OpenAI-compatible models such as `minimax-m2.5`.
 
 ### TUI controls
 
@@ -155,7 +197,7 @@ When `--lean-project` is set with a tool-capable worker model, workers get acces
 | `lean_verify(code)` | Compile Lean 4 code via `lake env lean`, returns OK or compiler errors |
 | `lean_search(query)` | Search Mathlib/Lean declarations by natural language query |
 
-Tools are provided via MCP (Claude workers) or native tool calling (vLLM workers). Actions are shown in the worker tab and can be browsed with arrow keys.
+Tools are provided via MCP for Claude and Codex workers, or native tool calling for vLLM workers. For Codex, OpenProver reuses the existing Lean MCP server through `mcp_servers.lean_tools`, with only `lean_verify` and `lean_search` enabled. Actions are shown in the worker tab and can be browsed with arrow keys.
 
 ## Output
 

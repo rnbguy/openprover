@@ -10,7 +10,7 @@ from pathlib import Path
 
 from openprover import __version__
 from .budget import Budget, parse_duration
-from .llm import LLMClient, HFClient
+from .llm import LLMClient, CodexClient, HFClient
 from .prover import Prover, slugify
 from .tui import TUI, HeadlessTUI
 
@@ -24,33 +24,47 @@ def _cli_flag_given(*flags: str) -> bool:
     return any(f in sys.argv for f in flags)
 
 
-def _save_run_config(work_dir: Path, *, planner_model: str, worker_model: str,
-                     budget_mode: str, budget_limit: int,
-                     conclude_after: float,
-                     parallelism: int, give_up_ratio: float,
-                     isolation: bool, autonomous: bool, mode: str,
-                     lean_project_dir: Path | None, lean_items: bool,
-                     lean_worker_tools: bool, provider_url: str,
-                     answer_reserve: int, history_budget: int):
+def _save_run_config(
+    work_dir: Path,
+    *,
+    planner_model: str,
+    worker_model: str,
+    budget_mode: str,
+    budget_limit: int,
+    conclude_after: float,
+    parallelism: int,
+    give_up_ratio: float,
+    isolation: bool,
+    autonomous: bool,
+    mode: str,
+    lean_project_dir: Path | None,
+    lean_items: bool,
+    lean_worker_tools: bool,
+    provider_url: str,
+    answer_reserve: int,
+    history_budget: int,
+):
     """Save run configuration so it can be restored on resume."""
     lines = [
         f'version = "{__version__}"',
         f'planner_model = "{planner_model}"',
         f'worker_model = "{worker_model}"',
         f'budget_mode = "{budget_mode}"',
-        f'budget_limit = {budget_limit}',
-        f'conclude_after = {conclude_after}',
-        f'parallelism = {parallelism}',
-        f'give_up_ratio = {give_up_ratio}',
-        f'isolation = {str(isolation).lower()}',
-        f'autonomous = {str(autonomous).lower()}',
+        f"budget_limit = {budget_limit}",
+        f"conclude_after = {conclude_after}",
+        f"parallelism = {parallelism}",
+        f"give_up_ratio = {give_up_ratio}",
+        f"isolation = {str(isolation).lower()}",
+        f"autonomous = {str(autonomous).lower()}",
         f'mode = "{mode}"',
-        f'lean_project_dir = "{lean_project_dir}"' if lean_project_dir else 'lean_project_dir = ""',
-        f'lean_items = {str(lean_items).lower()}',
-        f'lean_worker_tools = {str(lean_worker_tools).lower()}',
+        f'lean_project_dir = "{lean_project_dir}"'
+        if lean_project_dir
+        else 'lean_project_dir = ""',
+        f"lean_items = {str(lean_items).lower()}",
+        f"lean_worker_tools = {str(lean_worker_tools).lower()}",
         f'provider_url = "{provider_url}"',
-        f'answer_reserve = {answer_reserve}',
-        f'history_budget = {history_budget}',
+        f"answer_reserve = {answer_reserve}",
+        f"history_budget = {history_budget}",
     ]
     (work_dir / RUN_CONFIG_FILE).write_text("\n".join(lines) + "\n")
 
@@ -62,7 +76,7 @@ def _load_run_config(work_dir: Path) -> dict | None:
         return None
     text = path.read_text()
     config = {}
-    for m in re.finditer(r'^(\w+)\s*=\s*(.+)$', text, re.MULTILINE):
+    for m in re.finditer(r"^(\w+)\s*=\s*(.+)$", text, re.MULTILINE):
         key, val = m.group(1), m.group(2).strip()
         if val.startswith('"') and val.endswith('"'):
             config[key] = val[1:-1]
@@ -90,6 +104,7 @@ def main():
 
 def _cmd_fetch_lean_data():
     from .lean.data import fetch_lean_data
+
     fetch_lean_data()
 
 
@@ -98,10 +113,13 @@ def _cmd_inspect():
         prog="openprover inspect",
         description="Browse LLM prompts and outputs from an OpenProver run",
     )
-    parser.add_argument("run_dir", nargs="?", help="Run directory (default: most recent in runs/)")
+    parser.add_argument(
+        "run_dir", nargs="?", help="Run directory (default: most recent in runs/)"
+    )
     args = parser.parse_args(sys.argv[2:])
 
     from .inspect import inspect_main
+
     inspect_main(args.run_dir)
 
 
@@ -132,7 +150,9 @@ def _resolve_inputs(parser, args):
     if resuming:
         # Read everything from run_dir
         theorem_text = (run_dir / "THEOREM.md").read_text()
-        lean_theorem_text = (run_dir / "THEOREM.lean").read_text() if has_lean_theorem_file else ""
+        lean_theorem_text = (
+            (run_dir / "THEOREM.lean").read_text() if has_lean_theorem_file else ""
+        )
         proof_md_text = (run_dir / "PROOF.md").read_text() if has_proof_file else ""
     else:
         # Fresh start - resolve each input, checking for conflicts
@@ -203,7 +223,15 @@ def _resolve_inputs(parser, args):
         timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
         work_dir = Path("runs") / f"{slug}-{timestamp}"
 
-    return work_dir, theorem_text, lean_theorem_text, proof_md_text, mode, resuming, read_only
+    return (
+        work_dir,
+        theorem_text,
+        lean_theorem_text,
+        proof_md_text,
+        mode,
+        resuming,
+        read_only,
+    )
 
 
 def _is_finished(work_dir: Path, mode: str) -> bool:
@@ -224,41 +252,151 @@ def _cmd_prove():
         prog="openprover",
         description="Theorem prover powered by language models",
     )
-    model_choices = ["sonnet", "opus", "minimax-m2.5"]
-    parser.add_argument("run_dir", nargs="?", help="Working directory (resumes if it contains an existing run)")
-    parser.add_argument("--theorem", metavar="FILE", help="Path to theorem statement file (.md)")
-    parser.add_argument("--model", default="sonnet", choices=model_choices, help="Model to use for both planner and worker (default: sonnet)")
-    parser.add_argument("--planner-model", choices=model_choices, default=None, help="Override model for planner (defaults to --model)")
-    parser.add_argument("--worker-model", choices=model_choices, default=None, help="Override model for worker (defaults to --model)")
-    parser.add_argument("--provider-url", default="http://localhost:8000", help="Server URL for local models (default: http://localhost:8000)")
+    model_choices = ["sonnet", "opus", "gpt", "minimax-m2.5"]
+    parser.add_argument(
+        "run_dir",
+        nargs="?",
+        help="Working directory (resumes if it contains an existing run)",
+    )
+    parser.add_argument(
+        "--theorem", metavar="FILE", help="Path to theorem statement file (.md)"
+    )
+    parser.add_argument(
+        "--model",
+        default="sonnet",
+        choices=model_choices,
+        help="Model to use for both planner and worker (default: sonnet)",
+    )
+    parser.add_argument(
+        "--planner-model",
+        choices=model_choices,
+        default=None,
+        help="Override model for planner (defaults to --model)",
+    )
+    parser.add_argument(
+        "--worker-model",
+        choices=model_choices,
+        default=None,
+        help="Override model for worker (defaults to --model)",
+    )
+    parser.add_argument(
+        "--provider-url",
+        default="http://localhost:8000",
+        help="Server URL for local models (default: http://localhost:8000)",
+    )
     budget_group = parser.add_mutually_exclusive_group()
-    budget_group.add_argument("--max-tokens", type=int, default=None, metavar="N", help="Output token budget (mutually exclusive with --max-time)")
-    budget_group.add_argument("--max-time", type=str, default=None, metavar="DURATION", help="Wall-clock time budget, e.g. '30m', '2h' (default: 4h)")
-    parser.add_argument("--conclude-after", type=float, default=0.99, metavar="RATIO", help="Fraction of budget that triggers conclusion (0.9-1.0, default: 0.99)")
-    parser.add_argument("--autonomous", action="store_true", help="Start in autonomous mode (default: interactive)")
-    parser.add_argument("--read-only", action="store_true", help="Inspect run without resuming")
-    parser.add_argument("--isolation", action=argparse.BooleanOptionalAction, default=True, help="Disable web searches (no literature_search action)")
-    parser.add_argument("-P", "--parallelism", type=int, default=1, help="Max parallel workers per spawn step (default: 1)")
-    parser.add_argument("--give-up-after", type=float, default=0.5, metavar="RATIO", help="Fraction of budget before give_up action is allowed (default: 0.5)")
-    parser.add_argument("--answer-reserve", type=int, default=4096, metavar="TOKENS", help="Tokens reserved for answer after thinking (default: 4096)")
-    parser.add_argument("--history-budget", type=int, default=0, metavar="CHARS", help="Char budget for planner history (default: auto from model context)")
-    parser.add_argument("--headless", action="store_true", help="Non-interactive mode (logs to stdout, errors to stderr)")
-    parser.add_argument("--verbose", action="store_true", help="Show full LLM responses")
-    parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
+    budget_group.add_argument(
+        "--max-tokens",
+        type=int,
+        default=None,
+        metavar="N",
+        help="Output token budget (mutually exclusive with --max-time)",
+    )
+    budget_group.add_argument(
+        "--max-time",
+        type=str,
+        default=None,
+        metavar="DURATION",
+        help="Wall-clock time budget, e.g. '30m', '2h' (default: 4h)",
+    )
+    parser.add_argument(
+        "--conclude-after",
+        type=float,
+        default=0.99,
+        metavar="RATIO",
+        help="Fraction of budget that triggers conclusion (0.9-1.0, default: 0.99)",
+    )
+    parser.add_argument(
+        "--autonomous",
+        action="store_true",
+        help="Start in autonomous mode (default: interactive)",
+    )
+    parser.add_argument(
+        "--read-only", action="store_true", help="Inspect run without resuming"
+    )
+    parser.add_argument(
+        "--isolation",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Disable web searches (no literature_search action)",
+    )
+    parser.add_argument(
+        "-P",
+        "--parallelism",
+        type=int,
+        default=1,
+        help="Max parallel workers per spawn step (default: 1)",
+    )
+    parser.add_argument(
+        "--give-up-after",
+        type=float,
+        default=0.5,
+        metavar="RATIO",
+        help="Fraction of budget before give_up action is allowed (default: 0.5)",
+    )
+    parser.add_argument(
+        "--answer-reserve",
+        type=int,
+        default=4096,
+        metavar="TOKENS",
+        help="Tokens reserved for answer after thinking (default: 4096)",
+    )
+    parser.add_argument(
+        "--history-budget",
+        type=int,
+        default=0,
+        metavar="CHARS",
+        help="Char budget for planner history (default: auto from model context)",
+    )
+    parser.add_argument(
+        "--headless",
+        action="store_true",
+        help="Non-interactive mode (logs to stdout, errors to stderr)",
+    )
+    parser.add_argument(
+        "--verbose", action="store_true", help="Show full LLM responses"
+    )
+    parser.add_argument(
+        "--version", action="version", version=f"%(prog)s {__version__}"
+    )
 
     # Lean verification
-    parser.add_argument("--lean-project", type=Path, metavar="DIR",
-                        help="Path to Lean project with lakefile (enables formal verification)")
-    parser.add_argument("--lean-theorem", type=Path, metavar="FILE",
-                        help="Path to THEOREM.lean file (requires --lean-project)")
-    parser.add_argument("--proof", type=Path, metavar="FILE",
-                        help="Path to existing PROOF.md (formalize-only mode, requires --lean-theorem)")
-    parser.add_argument("--lean-items", action=argparse.BooleanOptionalAction, default=None,
-                        help="Allow saving .lean items to the repo (auto-enabled with --lean-project)")
-    parser.add_argument("--lean-worker-tools", action=argparse.BooleanOptionalAction, default=None,
-                        help="Enable worker tool calls (lean_verify, lean_search) via MCP/vLLM (auto-enabled with --lean-project + capable worker)")
-    parser.add_argument("--repl-dir", type=Path, metavar="DIR",
-                        help="Path to lean-repl directory (reserved for future use)")
+    parser.add_argument(
+        "--lean-project",
+        type=Path,
+        metavar="DIR",
+        help="Path to Lean project with lakefile (enables formal verification)",
+    )
+    parser.add_argument(
+        "--lean-theorem",
+        type=Path,
+        metavar="FILE",
+        help="Path to THEOREM.lean file (requires --lean-project)",
+    )
+    parser.add_argument(
+        "--proof",
+        type=Path,
+        metavar="FILE",
+        help="Path to existing PROOF.md (formalize-only mode, requires --lean-theorem)",
+    )
+    parser.add_argument(
+        "--lean-items",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Allow saving .lean items to the repo (auto-enabled with --lean-project)",
+    )
+    parser.add_argument(
+        "--lean-worker-tools",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Enable worker tool calls (lean_verify, lean_search) via MCP/vLLM (auto-enabled with --lean-project + capable worker)",
+    )
+    parser.add_argument(
+        "--repl-dir",
+        type=Path,
+        metavar="DIR",
+        help="Path to lean-repl directory (reserved for future use)",
+    )
 
     args = parser.parse_args()
 
@@ -277,8 +415,15 @@ def _cmd_prove():
 
     # ── Resolve inputs ──────────────────────────────────────────
 
-    (work_dir, theorem_text, lean_theorem_text, proof_md_text,
-     mode, resuming, read_only) = _resolve_inputs(parser, args)
+    (
+        work_dir,
+        theorem_text,
+        lean_theorem_text,
+        proof_md_text,
+        mode,
+        resuming,
+        read_only,
+    ) = _resolve_inputs(parser, args)
 
     # Map short model names to HuggingFace model IDs
     HF_MODEL_MAP = {
@@ -286,7 +431,8 @@ def _cmd_prove():
     }
     VLLM_MODELS = {"minimax-m2.5"}  # served via vLLM (standard OpenAI API)
     CLAUDE_MODELS = {"sonnet", "opus"}
-    TOOL_CAPABLE_MODELS = VLLM_MODELS | CLAUDE_MODELS
+    CODEX_MODELS = {"gpt"}
+    TOOL_CAPABLE_MODELS = VLLM_MODELS | CLAUDE_MODELS | CODEX_MODELS
 
     # ── On resume, load saved config and apply as defaults ──
     if resuming:
@@ -307,7 +453,11 @@ def _cmd_prove():
             if not args.worker_model:
                 args.worker_model = saved.get("worker_model")
             if not _cli_flag_given("--max-tokens", "--max-time"):
-                args.max_tokens = saved.get("budget_limit") if saved.get("budget_mode") == "tokens" else None
+                args.max_tokens = (
+                    saved.get("budget_limit")
+                    if saved.get("budget_mode") == "tokens"
+                    else None
+                )
                 args.max_time = None
                 args._saved_budget_mode = saved.get("budget_mode", "time")
                 args._saved_budget_limit = saved.get("budget_limit", 3600)
@@ -328,7 +478,9 @@ def _cmd_prove():
             if not _cli_flag_given("--lean-items", "--no-lean-items"):
                 args.lean_items = saved.get("lean_items", args.lean_items)
             if not _cli_flag_given("--lean-worker-tools", "--no-lean-worker-tools"):
-                args.lean_worker_tools = saved.get("lean_worker_tools", args.lean_worker_tools)
+                args.lean_worker_tools = saved.get(
+                    "lean_worker_tools", args.lean_worker_tools
+                )
             if not _cli_flag_given("--provider-url"):
                 args.provider_url = saved.get("provider_url", args.provider_url)
             if not _cli_flag_given("--answer-reserve"):
@@ -341,7 +493,9 @@ def _cmd_prove():
         if args.lean_theorem and not args.lean_project:
             parser.error("--lean-theorem requires --lean-project")
         if args.proof and not lean_theorem_text:
-            parser.error("--proof requires a Lean theorem (--lean-theorem or THEOREM.lean in run dir)")
+            parser.error(
+                "--proof requires a Lean theorem (--lean-theorem or THEOREM.lean in run dir)"
+            )
         if args.lean_project and not args.lean_project.is_dir():
             parser.error(f"--lean-project not found: {args.lean_project}")
 
@@ -353,15 +507,17 @@ def _cmd_prove():
     if args.lean_items is None:
         args.lean_items = args.lean_project is not None
     if args.lean_items and not args.lean_project:
-        parser.error("--lean-items requires --lean-project (verification needs a Lean project)")
+        parser.error(
+            "--lean-items requires --lean-project (verification needs a Lean project)"
+        )
 
     # Resolve effective planner/worker models
     planner_model = args.planner_model or args.model
     worker_model = args.worker_model or args.model
 
-    # HF-backed models have no web search capability - force isolation
-    hf_models = {"minimax-m2.5"}
-    if planner_model in hf_models and not args.isolation:
+    if (
+        planner_model in CODEX_MODELS or worker_model in CODEX_MODELS
+    ) and not args.isolation:
         args.isolation = True
 
     if args.headless:
@@ -373,19 +529,28 @@ def _cmd_prove():
     # Show early status so the user sees something immediately
     if not args.headless:
         label = "Resuming" if resuming else "Starting"
-        _model_hint = planner_model if planner_model == worker_model else f"{planner_model}/{worker_model}"
+        _model_hint = (
+            planner_model
+            if planner_model == worker_model
+            else f"{planner_model}/{worker_model}"
+        )
         print(f"  {label} openprover ({_model_hint}) ...", end="", flush=True)
 
     # Resolve --lean-worker-tools default
     if args.lean_worker_tools is None:
-        args.lean_worker_tools = (args.lean_project is not None and worker_model in TOOL_CAPABLE_MODELS)
+        args.lean_worker_tools = (
+            args.lean_project is not None and worker_model in TOOL_CAPABLE_MODELS
+        )
     if args.lean_worker_tools:
         if not args.lean_project:
             parser.error("--lean-worker-tools requires --lean-project")
         if worker_model not in TOOL_CAPABLE_MODELS:
-            parser.error("--lean-worker-tools requires a tool-capable worker model (sonnet, opus, or minimax-m2.5)")
+            parser.error(
+                "--lean-worker-tools requires a tool-capable worker model (sonnet, opus, gpt, or minimax-m2.5)"
+            )
         # Auto-fetch Lean Explore data if not available
         from .lean.data import is_lean_data_available, fetch_lean_data
+
         if not is_lean_data_available():
             if not args.headless:
                 print(" fetching lean data…", end="", flush=True)
@@ -393,10 +558,16 @@ def _cmd_prove():
                 print("Warning: lean_search will not be available")
 
     def _make_client(model_alias, archive_dir):
+        if model_alias in CODEX_MODELS:
+            return CodexClient("gpt-5.4", archive_dir)
         if model_alias in HF_MODEL_MAP:
-            return HFClient(HF_MODEL_MAP[model_alias], archive_dir,
-                            base_url=args.provider_url, answer_reserve=args.answer_reserve,
-                            vllm=model_alias in VLLM_MODELS)
+            return HFClient(
+                HF_MODEL_MAP[model_alias],
+                archive_dir,
+                base_url=args.provider_url,
+                answer_reserve=args.answer_reserve,
+                vllm=model_alias in VLLM_MODELS,
+            )
         return LLMClient(model_alias, archive_dir)
 
     def make_planner_llm(archive_dir):
@@ -405,7 +576,7 @@ def _cmd_prove():
     def make_worker_llm(archive_dir):
         return _make_client(worker_model, archive_dir)
 
-    MODEL_DISPLAY = {"sonnet": "sonnet 4.6", "opus": "opus 4.6"}
+    MODEL_DISPLAY = {"sonnet": "sonnet 4.6", "opus": "opus 4.6", "gpt": "gpt 5.4"}
     _p = MODEL_DISPLAY.get(planner_model, planner_model)
     _w = MODEL_DISPLAY.get(worker_model, worker_model)
     model_label = _p if planner_model == worker_model else f"{_p}/{_w}"
@@ -418,7 +589,7 @@ def _cmd_prove():
         budget_mode, budget_limit = "tokens", args.max_tokens
     elif args.max_time is not None:
         budget_mode, budget_limit = "time", parse_duration(args.max_time)
-    elif hasattr(args, '_saved_budget_mode'):
+    elif hasattr(args, "_saved_budget_mode"):
         # Resumed without explicit budget flags - use saved config
         budget_mode = args._saved_budget_mode
         budget_limit = args._saved_budget_limit
@@ -517,9 +688,11 @@ def _cmd_prove():
         cost = prover.planner_llm.total_cost + prover.worker_llm.total_cost
         calls = prover.planner_llm.call_count + prover.worker_llm.call_count
         tui.cleanup()
-        has_proof = ((prover.work_dir / "PROOF.md").exists()
-                     or (prover.work_dir / "PROOF.lean").exists())
+        has_proof = (prover.work_dir / "PROOF.md").exists() or (
+            prover.work_dir / "PROOF.lean"
+        ).exists()
         from .budget import _fmt_tokens
+
         tok_str = _fmt_tokens(prover.budget.total_output_tokens)
         print(f"  {calls} calls · ${cost:.4f} · {tok_str} output tokens")
         if (prover.work_dir / "PROOF.md").exists():

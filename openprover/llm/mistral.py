@@ -161,6 +161,7 @@ class MistralClient:
         tool_callback=None,
         tool_start_callback=None,
         max_tokens: int | None = None,
+        no_thinking: bool = False,
     ) -> dict:
         """Single-turn call. Same interface as LLMClient.call().
 
@@ -181,6 +182,7 @@ class MistralClient:
             instructions=system_prompt,
             max_tokens=max_tokens,
             stream=bool(stream_callback),
+            no_thinking=no_thinking,
         )
         start = time.time()
 
@@ -276,7 +278,7 @@ class MistralClient:
     # ── Payload builder ──────────────────────────────────────────────
 
     def _build_payload(self, *, inputs, instructions="", tools=None,
-                       max_tokens=None, stream=False):
+                       max_tokens=None, stream=False, no_thinking=False):
         effective_max = max_tokens if max_tokens is not None else self.max_output_tokens
         payload = {
             "model": self.model,
@@ -288,7 +290,7 @@ class MistralClient:
                 "temperature": 1.0,
                 "max_tokens": effective_max,
                 "top_p": 1,
-                "reasoning_effort": "high",
+                "reasoning_effort": "none" if no_thinking else "high",
             },
         }
         return payload

@@ -361,6 +361,7 @@ class MistralClient:
         tool_call_acc: dict[str, dict] = {}
         interrupted = False
         soft_interrupted = False
+        sse_stop_reason = None
 
         for raw_line in resp:
             if self._interrupted.is_set():
@@ -390,6 +391,15 @@ class MistralClient:
             elif event_type == "message.output.delta":
                 _parse_content_delta(chunk.get("content", ""),
                                      thinking_parts, output_parts, callback)
+            elif event_type:
+                logger.debug("[stream] unhandled event type: %s keys=%s",
+                             event_type, list(chunk.keys()))
+
+            # Capture stop_reason / finish_reason if present
+            if "stop_reason" in chunk:
+                sse_stop_reason = chunk["stop_reason"]
+            elif "finish_reason" in chunk:
+                sse_stop_reason = chunk["finish_reason"]
 
         elapsed_ms = int((time.time() - start) * 1000)
 
@@ -407,6 +417,13 @@ class MistralClient:
             finish_reason = "soft_interrupted"
         elif tool_calls:
             finish_reason = "tool_calls"
+        elif sse_stop_reason in ("length", "max_tokens", "model_length"):
+            finish_reason = "length"
+        elif thinking_parts and not output_parts:
+            # Model spent entire token budget on thinking, producing no output.
+            # Treat as truncation so Phase 2 can force an answer.
+            logger.info("[%s] thinking-only output (no result) — treating as truncated", label)
+            finish_reason = "length"
         else:
             finish_reason = "stop"
 

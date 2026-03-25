@@ -20,6 +20,19 @@ from .tui._colors import YELLOW, GREEN, RESET as _RESET
 logger = logging.getLogger("openprover")
 
 
+def _use_thinking_as_result(resp: dict) -> dict:
+    """If result is empty but thinking has content, use thinking as result.
+
+    Some models (e.g. Mistral/Leanstral) occasionally put all output into the
+    thinking trace and produce an empty result.  Fall back to thinking so that
+    downstream parsing (TOML, verdicts, etc.) can still work.
+    """
+    if not resp.get("result") and resp.get("thinking"):
+        resp = dict(resp)  # shallow copy
+        resp["result"] = resp["thinking"]
+    return resp
+
+
 def _format_tool_calls_toml(tc_log: list[dict]) -> str:
     """Format a tool calls log as TOML [[call]] entries."""
     lines = []
@@ -620,6 +633,7 @@ class Prover:
                 self._save_step_meta(step_dir, status="llm_error", error=str(e))
                 return "continue"
             self.tui.stream_end(tab="planner")
+            resp = _use_thinking_as_result(resp)
             self._track_output_tokens(resp)
             last_resp = resp
             logger.info("Planner: %dms $%.4f",
@@ -670,6 +684,7 @@ class Prover:
                         self._save_step_meta(step_dir, status="llm_error", error=str(e))
                         return "continue"
                     self.tui.stream_end(tab="planner")
+                    resp = _use_thinking_as_result(resp)
                     self._track_output_tokens(resp)
                     last_resp = resp
                     plans = prompts.parse_planner_toml(resp["result"])
@@ -1352,6 +1367,13 @@ class Prover:
         verdicts = {}
         for i, vresp in verifier_resps.items():
             verdict = prompts.extract_verdict(vresp.get("result", ""))
+            if not verdict and not vresp.get("error"):
+                verdict = "VERDICT: UNFINISHED - verification did not complete"
+                # Append notice to the result so the planner sees it too
+                vresp["result"] = (
+                    (vresp.get("result") or "")
+                    + "\n\n[Verifier output was incomplete — no verdict produced.]"
+                )
             if verdict:
                 verdicts[i] = verdict
         self.tui.step_entries[self._step_idx]["verdicts"] = verdicts
@@ -1510,6 +1532,7 @@ class Prover:
                 tool_start_callback=_tool_start_cb if use_mcp_tools else None,
             )
             self.tui.stream_end(tab=worker_id)
+            resp = _use_thinking_as_result(resp)
 
             # Phase 2 if truncated or soft-interrupted
             if resp.get("finish_reason") in ("length", "max_tokens", "soft_interrupted"):
@@ -1590,6 +1613,7 @@ class Prover:
                     archive_path=call_archive,
                 )
                 self.tui.stream_end(tab=worker_id)
+                resp = _use_thinking_as_result(resp)
                 total_cost += resp["cost"]
                 total_duration += resp["duration_ms"]
                 call_idx += 1
@@ -1773,6 +1797,44 @@ class Prover:
                 archive_path=archive_path,
             )
             self.tui.stream_end(tab=verifier_id)
+            resp = _use_thinking_as_result(resp)
+
+            # Phase 2: if truncated, force a verdict
+            if resp.get("finish_reason") in ("length", "max_tokens"):
+                logger.info("[%s] truncated - Phase 2", verifier_id)
+                self.tui.stream_start("forcing verdict...", tab=verifier_id)
+                phase2_prompt = (
+                    f"{prompt}\n\n---\n\n"
+                    f"Your previous verification was cut off. Based on your analysis so far, "
+                    f"provide your final verdict now.\n\n"
+                    f"Previous output (last 2000 chars):\n"
+                    f"```\n{resp['result'][-2000:]}\n```\n\n"
+                    f"Respond with ONLY one of:\n"
+                    f"VERDICT: CORRECT\n"
+                    f"VERDICT: CRITICALLY FLAWED - <brief reason>\n"
+                    f"VERDICT: NEEDS MINOR FIXES - <brief reason>"
+                )
+                answer_reserve = getattr(self.worker_llm, 'answer_reserve', None)
+                resp2 = self.worker_llm.call(
+                    prompt=phase2_prompt,
+                    system_prompt=system_prompt,
+                    label=f"{verifier_id}_phase2",
+                    stream_callback=self._stream_cb(verifier_id, output_only=True),
+                    archive_path=archive_path.parent / f"{archive_path.stem}_phase2.md" if archive_path else None,
+                    max_tokens=answer_reserve or 4_000,
+                    no_thinking=True,
+                )
+                self.tui.stream_end(tab=verifier_id)
+                resp2 = _use_thinking_as_result(resp2)
+                resp = {
+                    "result": resp["result"] + "\n\n" + resp2["result"],
+                    "thinking": resp.get("thinking", ""),
+                    "cost": resp["cost"] + resp2["cost"],
+                    "duration_ms": resp["duration_ms"] + resp2["duration_ms"],
+                    "raw": resp2["raw"],
+                    "finish_reason": resp2.get("finish_reason", "stop"),
+                }
+
             resp["error"] = ""
         except Interrupted:
             self.tui.stream_end(tab=verifier_id)
@@ -2134,12 +2196,14 @@ class Prover:
                         vtab.worker_output = result
                     if v_result:
                         self.tui.worker_output(vid, v_result)
-                        verdict = prompts.extract_verdict(v_result)
-                        if verdict:
-                            try:
-                                verdicts[int(tidx)] = verdict
-                            except ValueError:
-                                pass
+                    verdict = prompts.extract_verdict(v_result) if v_result else ""
+                    if not verdict and v_result_file.exists():
+                        verdict = "VERDICT: UNFINISHED - verification did not complete"
+                    if verdict:
+                        try:
+                            verdicts[int(tidx)] = verdict
+                        except ValueError:
+                            pass
                     self.tui.mark_worker_done(vid)
 
             self.tui.snapshot_worker_tabs(step_num)

@@ -214,7 +214,7 @@ class Prover:
         self._step_idx = 0
         self.step_history: list[dict] = []  # rolling window of last 3 steps
         self._current_planner_result = ""
-        self._current_action_output = ""
+        self._current_action_outputs: list[dict] = []
         self.proof_text = ""
         self.resumed = resumed
         self._respawn_plan = None  # set on resume if last step was interrupted spawn
@@ -370,7 +370,7 @@ class Prover:
         while not self.budget.is_exhausted() and not self.shutting_down:
             self.step_num += 1
             self._current_planner_result = ""
-            self._current_action_output = ""
+            self._current_action_outputs = []
             self._current_step_action = ""
             self._current_step_summary = ""
             result = self._do_step()
@@ -381,7 +381,7 @@ class Prover:
                     "planner": self._current_planner_result,
                     "action": self._current_step_action,
                     "summary": self._current_step_summary,
-                    "output": self._current_action_output,
+                    "outputs": self._current_action_outputs,
                 })
                 if len(self.step_history) > 3:
                     self.step_history = self.step_history[-3:]
@@ -398,10 +398,12 @@ class Prover:
     def _push_output(self, text: str):
         """Store action output for the current step's history entry."""
         if text:
-            if self._current_action_output:
-                self._current_action_output += "\n\n" + text
-            else:
-                self._current_action_output = text
+            if self._current_action_outputs:
+                entry = self._current_action_outputs[-1]
+                if entry["output"]:
+                    entry["output"] += "\n\n" + text
+                else:
+                    entry["output"] = text
             self.tui.append_step_action_output(self.step_num, text)
 
     def _save_step_history(self):
@@ -581,6 +583,7 @@ class Prover:
             step_history=list(self.step_history),
             budget_status=self.budget.summary_str(),
             parallelism=self.parallelism,
+            theorem_text=self.theorem_text,
             has_lean_theorem=bool(self.lean_theorem_text),
             has_proof_md=(self.work_dir / "PROOF.md").exists(),
             has_proof_lean=(self.work_dir / "PROOF.lean").exists(),
@@ -774,6 +777,11 @@ class Prover:
         for plan in plans:
             action = plan["action"]
             last_action = action
+            self._current_action_outputs.append({
+                "action": action,
+                "summary": plan.get("summary", ""),
+                "output": "",
+            })
 
             if action == "write_whiteboard":
                 self._handle_write_whiteboard(plan)
@@ -870,7 +878,12 @@ class Prover:
                 error="Rejected by user feedback",
                 feedback=text,
             )
-            self._push_output(f"Human feedback: {user_resp}")
+            self._current_action_outputs.append({
+                "action": "rejected",
+                "summary": "User rejected and provided feedback",
+                "output": f"Human feedback: {user_resp}",
+            })
+            self.tui.append_step_action_output(self.step_num, f"Human feedback: {user_resp}")
             self.tui.show_replan_notice("Feedback noted - will replan next step")
             return "continue"
 
@@ -914,7 +927,6 @@ class Prover:
                 interrupted=True,
                 feedback=text,
             )
-            self._push_output(f"Human feedback: {user_resp}")
             # Include partial planner output + feedback in history so next
             # planner call sees what was interrupted and the user's guidance.
             feedback_text = f"Human feedback: {user_resp}" if text else ""
@@ -923,7 +935,7 @@ class Prover:
                 "planner": f"(interrupted) {partial}".strip(),
                 "action": "interrupted",
                 "summary": "User interrupted and provided feedback",
-                "output": feedback_text,
+                "outputs": [{"action": "interrupted", "summary": "User feedback", "output": feedback_text}],
             })
             if len(self.step_history) > 3:
                 self.step_history = self.step_history[-3:]

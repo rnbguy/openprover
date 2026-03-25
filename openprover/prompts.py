@@ -583,12 +583,20 @@ def format_planner_prompt(
     budget_status: str,
     parallelism: int = 1,
     *,
+    theorem_text: str = "",
     has_lean_theorem: bool = False,
     has_proof_md: bool = False,
     has_proof_lean: bool = False,
     history_budget: int = 0,
 ) -> str:
-    parts = [f"# Whiteboard\n\n{whiteboard}"]
+    def heading(title):
+        bar = "=" * (len(title) + 2)
+        return f"{bar}\n {title}\n{bar}"
+
+    parts = [f"{heading('WHITEBOARD')}\n\n{whiteboard}"]
+
+    if theorem_text:
+        parts.append(f"\n\n{heading('THEOREM')}\n\n{theorem_text}")
 
     # Status indicators
     status_lines = [f"- Theorem statement: already present"]
@@ -598,37 +606,50 @@ def format_planner_prompt(
         status_lines.append(f"- Formal Lean proof (verified): {'already present' if has_proof_lean else 'missing'}")
     else:
         status_lines.append(f"- Proof: {'already present' if has_proof_md else 'missing'}")
-    parts.append(f"\n\n# What we have\n\n" + "\n".join(status_lines))
+    parts.append(f"\n\n{heading('STATUS')}\n\n" + "\n".join(status_lines))
 
     if repo_index:
-        parts.append(f"\n\n# Repository\n\n{repo_index}")
+        parts.append(f"\n\n{heading('REPOSITORY')}\n\n{repo_index}")
     if step_history and history_budget > 0:
         # Distribute budget: split evenly across entries, 2/3 planner 1/3 output
         per_entry = history_budget // len(step_history)
         planner_limit = per_entry * 2 // 3
         output_limit = per_entry - planner_limit
 
-        parts.append("\n\n# Recent History")
+        parts.append(f"\n\n{heading('RECENT HISTORY')}")
         for entry in step_history:
             step = entry.get("step", "?")
-            action = entry.get("action", "")
-            summary = entry.get("summary", "")
-            header = f"Step {step}"
-            if action:
-                header += f": {action}"
-            if summary:
-                header += f" - {summary}"
-            parts.append(f"\n\n## {header}")
 
             planner = entry.get("planner", "")
             if planner:
                 planner = _truncate_keep_end(planner, planner_limit)
-                parts.append(f"\n\n### Planner\n\n{planner}")
+                parts.append(f"\n\n# Planner output (step {step})\n\n<planner_output>\n{planner}\n</planner_output>")
 
-            output = entry.get("output", "")
-            if output:
-                output = _truncate_keep_end(output, output_limit)
-                parts.append(f"\n\n### Result\n\n{output}")
+            # Support both new list format ("outputs") and legacy string ("output")
+            outputs = entry.get("outputs")
+            if outputs is None:
+                legacy = entry.get("output", "")
+                if legacy:
+                    outputs = [{"action": entry.get("action", ""), "summary": entry.get("summary", ""), "output": legacy}]
+                else:
+                    outputs = []
+
+            for i, ao in enumerate(outputs):
+                text = ao.get("output", "")
+                if not text:
+                    continue
+                text = _truncate_keep_end(text, output_limit)
+                a_action = ao.get("action", "")
+                a_summary = ao.get("summary", "")
+                if len(outputs) > 1:
+                    label = f"Action {i + 1} output (step {step})"
+                else:
+                    label = f"Action output (step {step})"
+                if a_action:
+                    label += f": {a_action}"
+                if a_summary:
+                    label += f" - {a_summary}"
+                parts.append(f"\n\n# {label}\n\n<action_output>\n{text}\n</action_output>")
     parts.append(f"\nMax {parallelism} worker(s) per spawn. What's the most productive next move?")
     return "".join(parts)
 

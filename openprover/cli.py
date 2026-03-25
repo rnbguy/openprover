@@ -27,7 +27,7 @@ def _cli_flag_given(*flags: str) -> bool:
 def _save_run_config(work_dir: Path, *, planner_model: str, worker_model: str,
                      budget_mode: str, budget_limit: int,
                      conclude_after: float,
-                     parallelism: int, give_up_ratio: float,
+                     parallelism: int,
                      isolation: bool, autonomous: bool, mode: str,
                      lean_project_dir: Path | None, lean_items: bool,
                      lean_worker_tools: bool, provider_url: str,
@@ -41,7 +41,6 @@ def _save_run_config(work_dir: Path, *, planner_model: str, worker_model: str,
         f'budget_limit = {budget_limit}',
         f'conclude_after = {conclude_after}',
         f'parallelism = {parallelism}',
-        f'give_up_ratio = {give_up_ratio}',
         f'isolation = {str(isolation).lower()}',
         f'autonomous = {str(autonomous).lower()}',
         f'mode = "{mode}"',
@@ -239,7 +238,6 @@ def _cmd_prove():
     parser.add_argument("--read-only", action="store_true", help="Inspect run without resuming")
     parser.add_argument("--isolation", action=argparse.BooleanOptionalAction, default=True, help="Disable web searches (no literature_search action)")
     parser.add_argument("-P", "--parallelism", type=int, default=1, help="Max parallel workers per spawn step (default: 1)")
-    parser.add_argument("--give-up-after", type=float, default=0.5, metavar="RATIO", help="Fraction of budget before give_up action is allowed (default: 0.5)")
     parser.add_argument("--answer-reserve", type=int, default=4096, metavar="TOKENS", help="Tokens reserved for answer after thinking (default: 4096)")
     parser.add_argument("--history-budget", type=int, default=0, metavar="CHARS", help="Char budget for planner history (default: auto from model context)")
     parser.add_argument("--effort", choices=["low", "medium", "high", "max"], default=None,
@@ -321,8 +319,6 @@ def _cmd_prove():
                 args.conclude_after = saved.get("conclude_after", args.conclude_after)
             if not _cli_flag_given("-P", "--parallelism"):
                 args.parallelism = saved.get("parallelism", args.parallelism)
-            if not _cli_flag_given("--give-up-after"):
-                args.give_up_after = saved.get("give_up_ratio", args.give_up_after)
             if not _cli_flag_given("--isolation", "--no-isolation"):
                 args.isolation = saved.get("isolation", args.isolation)
             if not _cli_flag_given("--autonomous"):
@@ -456,7 +452,6 @@ def _cmd_prove():
         mode=budget_mode,
         limit=budget_limit,
         conclude_after=args.conclude_after,
-        give_up_after=args.give_up_after,
     )
 
     # Save config on fresh start
@@ -470,7 +465,6 @@ def _cmd_prove():
             budget_limit=budget_limit,
             conclude_after=args.conclude_after,
             parallelism=args.parallelism,
-            give_up_ratio=args.give_up_after,
             isolation=args.isolation,
             autonomous=args.autonomous,
             mode=mode,

@@ -14,7 +14,7 @@ except ModuleNotFoundError:
 # ── Action types ────────────────────────────────────────────
 
 ACTIONS = [
-    "submit_proof", "submit_lean_proof", "give_up", "read_items", "write_items",
+    "submit_proof", "submit_lean_proof", "read_items", "write_items",
     "spawn", "literature_search",
     "read_theorem", "write_whiteboard",
 ]
@@ -29,7 +29,7 @@ _TOML_CLOSE_TAG = "</OPENPROVER_ACTION>"
 
 
 def _build_actions(*, lean_mode: str, has_lean: bool,
-                   allow_give_up: bool, isolation: bool) -> str:
+                   isolation: bool) -> str:
     """Build the actions list section of the system prompt."""
     actions = (
         "- **spawn**: Send tasks to workers (they do the actual math / verification / exploration). Workers are pure reasoning - they only see the context you provide to them.\n"
@@ -60,8 +60,6 @@ def _build_actions(*, lean_mode: str, has_lean: bool,
             "- **submit_lean_proof**: Submit the formal Lean 4 proof by referencing a lean repo item slug (lean_proof_slug). "
             "Auto-verified with Lean. **If verification succeeds, the session ends.**\n"
         )
-    if allow_give_up:
-        actions += "- **give_up**: Declare failure.\n"
     if not isolation:
         actions += (
             "- **literature_search**: Search the web for relevant mathematical literature. Spawns one web-enabled worker.\n"
@@ -316,7 +314,7 @@ def _build_submit_proof_section(*, lean_mode: str, has_lean: bool) -> str:
     return section
 
 
-def planner_system_prompt(*, isolation: bool = False, allow_give_up: bool = True,
+def planner_system_prompt(*, isolation: bool = False,
                           lean_mode: str = "prove",
                           lean_items: bool = False) -> str:
     """Build the planner system prompt, conditionally omitting actions."""
@@ -324,7 +322,7 @@ def planner_system_prompt(*, isolation: bool = False, allow_give_up: bool = True
     available_actions = ACTIONS if not isolation else ACTIONS_NO_SEARCH
 
     actions = _build_actions(
-        lean_mode=lean_mode, has_lean=has_lean, allow_give_up=allow_give_up,
+        lean_mode=lean_mode, has_lean=has_lean,
         isolation=isolation,
     )
     principles = _build_principles(

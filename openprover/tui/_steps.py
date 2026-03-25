@@ -399,7 +399,6 @@ class StepsMixin:
             "read_theorem": "Theorem Analysis",
             "submit_proof": "Submission",
             "submit_lean_proof": "Lean Submission",
-            "give_up": "Termination",
         }.get(action, "Step Details")
 
     def _refresh_step_detail(self):

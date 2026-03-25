@@ -349,7 +349,6 @@ class Prover:
             "model": self.model,
             "budget": self.budget.limit_str(),
             "conclude_after": f"{self.budget.conclude_after:.0%}",
-            "give_up_after": f"{self.budget.give_up_after:.0%}",
             "parallelism": str(self.parallelism),
             "isolation": "on" if self.isolation else "off",
             "mode": self.mode,
@@ -592,7 +591,6 @@ class Prover:
         MAX_PARSE_RETRIES = 2
         system_prompt = prompts.planner_system_prompt(
             isolation=self.isolation,
-            allow_give_up=self.budget.allow_give_up(),
             lean_mode=self.mode,
             lean_items=self.lean_items,
         )
@@ -762,7 +760,7 @@ class Prover:
         """Execute a list of parsed action plans sequentially.
 
         Low-impact actions (write_whiteboard, read_items, read_theorem, write_items)
-        are executed inline. Heavy actions (spawn, literature_search, submit, give_up)
+        are executed inline. Heavy actions (spawn, literature_search, submit)
         run their own logic and may save step metadata themselves.
 
         Processing stops early only when an action returns "stop" (session
@@ -790,8 +788,6 @@ class Prover:
                 result = self._handle_submit_proof(plan, step_dir)
             elif action == "submit_lean_proof":
                 result = self._handle_submit_lean_proof(plan, step_dir)
-            elif action == "give_up":
-                result = self._handle_give_up()
             elif action == "spawn":
                 # spawn and literature_search save their own meta (include worker details)
                 result = self._handle_spawn(plan, step_dir, resp)
@@ -1042,19 +1038,6 @@ class Prover:
 
         self._push_output(feedback)
         return "continue"
-
-    def _handle_give_up(self) -> str:
-        if not self.budget.allow_give_up():
-            pct = int(self.budget.fraction_spent() * 100)
-            self.tui.log(
-                f"Not giving up - only {pct}% of budget spent",
-                color="yellow",
-            )
-            self._push_output("give_up rejected: too much budget remaining. Keep trying.")
-            return "continue"
-        logger.info("Giving up at step %d (budget %s)", self.step_num, self.budget.status_str())
-        self.tui.log("Stuck - no more ideas.", color="yellow")
-        return "stop"
 
     def _handle_read_items(self, plan: dict):
         slugs = plan.get("read", [])

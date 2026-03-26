@@ -711,8 +711,6 @@ Produce both an informal proof and a formal Lean 4 proof of this theorem:
 ### Theorem
 {theorem_text}
 
-To see the formal theorem statement in Lean, use read_theorem. Only do that after you figured out the informal proof in English.
-
 ## Plan
 
 - [ ] Find a proof in natural language.

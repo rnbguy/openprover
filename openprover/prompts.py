@@ -132,6 +132,13 @@ def _build_principles(*, lean_mode: str, has_lean: bool,
     principles += (
         "- Write proofs as repo items first (via write_items). This lets you refine, verify, and iterate "
         "on the proof before submitting. When ready, use submit_proof with the item's slug.\n"
+        "- **Proof quality standard.** The submitted proof must be a complete, rigorous, standalone mathematical argument. "
+        "It must define all notation, state all intermediate claims, and justify every non-trivial step. "
+        "A reader with graduate-level math background but no context about this problem should be able to follow "
+        "the proof from start to finish without needing to fill in any gaps. "
+        "Sketchy, terse, or outline-level proofs are NOT acceptable — every logical step must be explicit. "
+        "If a step uses a known theorem, state the theorem. If a step involves a calculation, show the calculation. "
+        "The verification worker should be instructed to reject proofs that skip steps or leave gaps.\n"
     )
     _lean_no_cheat = (
         "- **NEVER trivialize the answer.** When the theorem has a `_solution` abbrev (e.g. "
@@ -165,7 +172,9 @@ def _build_principles(*, lean_mode: str, has_lean: bool,
         )
     elif lean_mode == "prove":
         principles += (
-            "- Have the proof independently verified by a worker before calling submit_proof.\n"
+            "- Have the proof independently verified by a worker before calling submit_proof. "
+            "Instruct the verification worker to check both correctness AND completeness — "
+            "reject proofs that skip steps, hand-wave, or leave gaps for the reader to fill.\n"
         )
     return principles
 
@@ -295,6 +304,10 @@ def _build_submit_proof_section(*, lean_mode: str, has_lean: bool) -> str:
             "NEVER submit unless the proof has been VERIFIED by an independent worker. "
             "The session ends when both informal and formal proofs are accepted.\n"
             "\n"
+            "**Quality bar**: The informal proof must be complete and self-contained — not a sketch or outline. "
+            "Every claim must be justified, every step explicit. A knowledgeable reader must be able to verify "
+            "correctness without filling in gaps.\n"
+            "\n"
             "## submit_lean_proof\n"
             "\n"
             "submit_lean_proof takes `lean_proof_slug` pointing to a **lean** repo item "
@@ -310,6 +323,11 @@ def _build_submit_proof_section(*, lean_mode: str, has_lean: bool) -> str:
             "then submit when finalized. "
             "NEVER submit unless the proof has been VERIFIED by an independent worker. "
             "submit_proof **terminates the session** - there is no going back.\n"
+            "\n"
+            "**Quality bar**: The proof must be complete and self-contained. It must not read like an outline or sketch. "
+            "Every claim must be justified, every step must be explicit, and a knowledgeable reader must be able to "
+            "verify correctness without filling in gaps. Before submitting, have the verification worker specifically "
+            "check for completeness and flag any steps that are hand-waved or insufficiently justified.\n"
         )
     return section
 
@@ -445,8 +463,16 @@ def worker_system_prompt(*, lean_worker_tools: bool = False) -> str:
         "Clearly state what you found, where you got stuck, and what remains open. "
         "The planner will decide whether to continue from your progress or try a different approach.\n"
         "\n"
+        "If asked to write or complete a proof: write a **complete, rigorous, self-contained** argument. "
+        "Define all notation. State and justify every non-trivial step. "
+        "If a step uses a known theorem, state it explicitly. If a step involves a calculation or estimate, show it in full. "
+        "The proof should be readable and verifiable by a mathematician with no prior context about this problem. "
+        "Never write outline-level or sketch proofs — every logical step must be explicit.\n"
+        "\n"
         "If asked to verify a proof: be rigorous. Check every step. "
-        "Don't fill in gaps yourself. End your response with exactly one of:\n"
+        "Don't fill in gaps yourself — if a step is unclear, unjustified, or hand-waved, flag it as a gap. "
+        "Specifically check for completeness: are there steps that skip non-trivial reasoning? "
+        "End your response with exactly one of:\n"
         "VERDICT: CORRECT\n"
         "VERDICT: INCORRECT\n"
         "\n"

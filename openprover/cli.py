@@ -242,8 +242,8 @@ def _cmd_prove():
     parser.add_argument("--history-budget", type=int, default=0, metavar="CHARS", help="Char budget for planner history (default: auto from model context)")
     parser.add_argument("--effort", choices=["low", "medium", "high", "max"], default=None,
                         help="Claude reasoning effort level (default: max for opus, high for others; Claude models only)")
-    parser.add_argument("--exit-on-budget-out", action="store_true",
-                        help="Exit when Claude spending limit is hit instead of retrying (Claude models only)")
+    parser.add_argument("--on-budget-out", choices=["backoff", "exit"], default=None,
+                        help="Action when rate-limited (429): backoff = exponential retry, exit = stop immediately (Claude models only)")
     parser.add_argument("--headless", action="store_true", help="Non-interactive mode (logs to stdout, errors to stderr)")
     parser.add_argument("--verbose", action="store_true", help="Show full LLM responses")
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
@@ -381,12 +381,12 @@ def _cmd_prove():
         else:
             effective_effort = None
 
-    # --exit-on-budget-out is only meaningful for Claude models
-    if args.exit_on_budget_out:
+    # --on-budget-out is only meaningful for Claude models
+    if args.on_budget_out:
         non_claude = [m for m in (planner_model, worker_model) if m not in CLAUDE_MODELS]
         if non_claude:
             parser.error(
-                f"--exit-on-budget-out is only supported for Claude models (sonnet, opus); "
+                f"--on-budget-out is only supported for Claude models (sonnet, opus); "
                 f"got: {', '.join(non_claude)}"
             )
 
@@ -507,7 +507,7 @@ def _cmd_prove():
         lean_items=args.lean_items,
         lean_worker_tools=args.lean_worker_tools,
         history_budget=args.history_budget,
-        exit_on_budget_out=args.exit_on_budget_out,
+        on_budget_out=args.on_budget_out,
     )
 
     # Clear the early status line before TUI takes over

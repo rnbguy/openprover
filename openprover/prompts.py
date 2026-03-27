@@ -94,7 +94,10 @@ def _build_principles(*, lean_mode: str, has_lean: bool,
         "include the problem statement, relevant definitions, prior results, and any constraints the worker needs.\n"
         "- Workers may return partial results. Decide whether to spawn a follow-up or pivot.\n"
         "- **Don't stop at partial results.** Save progress to the repo with [[slug]] references and keep working toward the full solution.\n"
-        "- Don't get stuck. If the first proof avenue does not work, try others.\n"
+        "- **Never retry a failed approach.** If a worker's attempt was rated CRITICALLY FLAWED or produced no usable output, "
+        "do NOT spawn another worker with the same task. Instead: record what failed and why on the whiteboard, "
+        "then try a different angle — a simpler sub-lemma, a different proof strategy, or a different case entirely. "
+        "Repeating the same failing task wastes budget.\n"
         "- **Update the whiteboard immediately** after anything important happens — worker results, failed attempts, "
         "discovered import paths, key insights. The whiteboard is your ONLY persistent memory between steps. "
         "If you don't write it down, you'll forget it and repeat mistakes. "
@@ -434,9 +437,13 @@ def planner_system_prompt(*, isolation: bool = False,
         f'action = "spawn"\n'
         "\n"
         "[[tasks]]\n"
-        'summary = "Prove upper bound via angular order statistics"\n'
+        'summary = "Prove Case 1: convex pentagon"\n'
         f'description = {_TQ}\n'
-        "Full task instructions here...\n"
+        "Prove that if 5 points in the plane have a convex hull with 5 vertices,\n"
+        "then any 4 of them form a convex quadrilateral.\n"
+        "\n"
+        "The informal proof is in [[proofs/informal-main]] — see Case 1.\n"
+        "Use the helper lemma from [[lemmas/extreme-point-not-in-hull]].\n"
         f'{_TQ}\n'
         f"{_TOML_CLOSE_TAG}\n"
         "\n"

@@ -180,7 +180,10 @@ def _tool_lean_search(
     try:
         t0 = time.time()
         response = asyncio.run(
-            lean_explore_service.search(query, limit=10, rerank_top=rerank)
+            lean_explore_service.search(
+                query, limit=10, rerank_top=rerank,
+                packages=["Mathlib", "Batteries", "Init", "Lean", "Std"],
+            )
         )
         elapsed = time.time() - t0
         results = response.results

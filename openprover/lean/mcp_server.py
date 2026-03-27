@@ -131,7 +131,10 @@ async def lean_search(query: str) -> str:
         raise ValueError("no query provided")
     service = _get_search_service()
     rerank = 25 if _gpu_available() else 0
-    response = await service.search(query, limit=10, rerank_top=rerank)
+    response = await service.search(
+        query, limit=10, rerank_top=rerank,
+        packages=["Mathlib", "Batteries", "Init", "Lean", "Std"],
+    )
     results = response.results
     if not results:
         return "No results found"

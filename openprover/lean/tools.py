@@ -4,7 +4,7 @@ import asyncio
 import logging
 import time
 
-from .core import LeanWorkDir, lean_has_errors, merge_lean_imports, run_lean_check
+from .core import LeanWorkDir, lean_has_errors, merge_lean_imports, run_lean_check, strip_code_fences
 
 logger = logging.getLogger("openprover.lean")
 
@@ -91,7 +91,7 @@ def _tool_lean_verify(
     lean_project_dir,
 ) -> tuple[str, str]:
     """Verify Lean code via lean_check."""
-    code = args.get("code", "")
+    code = strip_code_fences(args.get("code", ""))
     if not code:
         return ("No code provided", "error")
     if not lean_work_dir:
@@ -135,7 +135,7 @@ def _tool_lean_store(
     lean_project_dir,
 ) -> tuple[str, str]:
     """Store a verified Lean snippet into the worker's persistent prefix."""
-    code = args.get("code", "")
+    code = strip_code_fences(args.get("code", ""))
     if not code:
         return ("No code provided", "error")
     if not lean_work_dir:

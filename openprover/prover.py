@@ -42,6 +42,26 @@ def _call_phase2(llm, **kwargs):
     return llm.call(**kwargs)
 
 
+def _compose_responses(*responses: dict) -> dict:
+    """Combine accounting from responses while retaining the final response."""
+    result = dict(responses[-1])
+    raw = dict(result.get("raw") or {})
+    usage = {
+        key: value for key, value in (raw.get("usage") or {}).items()
+        if not isinstance(value, (int, float)) or isinstance(value, bool)
+    }
+    for response in responses:
+        for key, value in (response.get("raw") or {}).get("usage", {}).items():
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                usage[key] = usage.get(key, 0) + value
+    if usage:
+        raw["usage"] = usage
+    result["raw"] = raw
+    result["cost"] = sum(response.get("cost", 0.0) for response in responses)
+    result["duration_ms"] = sum(response.get("duration_ms", 0) for response in responses)
+    return result
+
+
 def _format_tool_calls_toml(tc_log: list[dict]) -> str:
     """Format a tool calls log as TOML [[call]] entries."""
     lines = []
@@ -674,6 +694,7 @@ class Prover:
         plan = None
         parse_error = ""
         last_resp = None
+        completed_responses: list[dict] = []
 
         for attempt in range(MAX_PARSE_RETRIES + 1):
             if attempt > 0:
@@ -702,7 +723,7 @@ class Prover:
                 except Interrupted:
                     self.tui.stream_end(tab="planner")
                     logger.info("Planner interrupted")
-                    return self._handle_interrupt(step_dir)
+                    return self._handle_interrupt(step_dir, last_resp)
                 except RuntimeError as e:
                     self.tui.stream_end(tab="planner")
                     logger.error("Planner error: %s", e)
@@ -711,17 +732,18 @@ class Prover:
                     action = self._check_error_policy(e)
                     if action == "retry":
                         continue
-                    self._save_step_meta(step_dir, status="llm_error", error=str(e))
+                    self._save_step_meta(step_dir, status="llm_error", error=str(e), resp=last_resp)
                     return action  # "stop" or "continue"
             self.tui.stream_end(tab="planner")
             resp = _use_thinking_as_result(resp)
             self._track_output_tokens(resp)
-            last_resp = resp
+            completed_responses.append(resp)
+            last_resp = _compose_responses(*completed_responses)
             logger.info("Planner: %dms $%.4f",
                          resp.get("duration_ms", 0), resp.get("cost", 0))
 
             # Parse TOML decision block(s)
-            plans = prompts.parse_planner_toml(resp["result"])
+            plans = prompts.parse_planner_toml(last_resp["result"])
 
             if isinstance(plans, prompts.ParseError):
                 parse_error = plans.message
@@ -758,7 +780,7 @@ class Prover:
                                         "<OPENPROVER_ACTION>...</OPENPROVER_ACTION> block."
                                     )},
                                 ]
-                                resp = self.planner_llm.chat(
+                                resp2 = self.planner_llm.chat(
                                     messages=messages,
                                     tools=None,
                                     max_tokens=phase2_max,
@@ -769,7 +791,7 @@ class Prover:
                                 )
                             else:
                                 phase2_prompt = prompts.format_planner_truncated(prompt, resp["result"])
-                                resp = _call_phase2(
+                                resp2 = _call_phase2(
                                     self.planner_llm,
                                     prompt=phase2_prompt,
                                     system_prompt=system_prompt,
@@ -781,7 +803,7 @@ class Prover:
                             break  # success
                         except Interrupted:
                             self.tui.stream_end(tab="planner")
-                            return self._handle_interrupt(step_dir)
+                            return self._handle_interrupt(step_dir, last_resp)
                         except RuntimeError as e:
                             self.tui.stream_end(tab="planner")
                             logger.error("Phase 2 error: %s", e)
@@ -789,11 +811,15 @@ class Prover:
                             action = self._check_error_policy(e)
                             if action == "retry":
                                 continue
-                            self._save_step_meta(step_dir, status="llm_error", error=str(e))
+                            self._save_step_meta(
+                                step_dir, status="llm_error", error=str(e), resp=last_resp,
+                            )
                             return action
                     self.tui.stream_end(tab="planner")
-                    resp = _use_thinking_as_result(resp)
-                    self._track_output_tokens(resp)
+                    resp2 = _use_thinking_as_result(resp2)
+                    self._track_output_tokens(resp2)
+                    completed_responses.append(resp2)
+                    resp = _compose_responses(*completed_responses)
                     last_resp = resp
                     plans = prompts.parse_planner_toml(resp["result"])
                     if isinstance(plans, prompts.ParseError):
@@ -818,6 +844,7 @@ class Prover:
 
             break  # success
 
+        resp = last_resp
         if plans is None:
             self._save_step_meta(step_dir, status="parse_error", resp=last_resp,
                                  error=parse_error)
@@ -994,13 +1021,13 @@ class Prover:
             self.tui.show_replan_notice("Feedback noted - will replan next step")
             return "continue"
 
-    def _handle_interrupt(self, step_dir: Path) -> str:
+    def _handle_interrupt(self, step_dir: Path, resp: dict | None = None) -> str:
         """Handle CTRL+C during planner/worker call.
 
         Shows continue/feedback options (feedback selected by default).
         If autonomous, switches to manual mode.
         """
-        self._save_step_meta(step_dir, status="interrupted")
+        self._save_step_meta(step_dir, status="interrupted", resp=resp)
         self.step_num -= 1  # don't count interrupted step
         self.planner_llm.clear_interrupt()
         self.worker_llm.clear_interrupt()
@@ -1821,6 +1848,8 @@ class Prover:
                                 *, use_mcp_tools: bool = False) -> dict:
         """Single-turn worker: Claude CLI (with or without MCP) or non-vLLM."""
         tool_calls_log: list[dict] = []
+        phase1_resp = None
+        completed_responses: list[dict] = []
 
         def _tool_start_cb(name, tool_input):
             logger.info("[%s] %s: starting", worker_id, name)
@@ -1848,10 +1877,12 @@ class Prover:
                 )
                 self.tui.stream_end(tab=worker_id)
                 resp = _use_thinking_as_result(resp)
+                completed_responses.append(resp)
 
                 # Phase 2 if truncated or soft-interrupted
                 if resp.get("finish_reason") in ("length", "max_tokens", "soft_interrupted"):
                     reason = resp["finish_reason"]
+                    phase1_resp = resp
                     logger.info("[%s] %s - Phase 2", worker_id, reason)
                     if reason == "soft_interrupted":
                         self.worker_llm.clear_soft_interrupt()
@@ -1898,24 +1929,23 @@ class Prover:
                             stream_callback=self._stream_cb(worker_id, output_only=True),
                             archive_path=archive_path.parent / f"{archive_path.stem}_phase2.md" if archive_path else None,
                             max_tokens=phase2_max,
-                        )
+                    )
                     self.tui.stream_end(tab=worker_id)
-                    resp = {
-                        "result": resp2["result"],
-                        "thinking": resp["thinking"] + resp2.get("thinking", ""),
-                        "cost": resp["cost"] + resp2["cost"],
-                        "duration_ms": resp["duration_ms"] + resp2["duration_ms"],
-                        "raw": resp2["raw"],
-                        "finish_reason": resp2.get("finish_reason", "stop"),
-                    }
+                    completed_responses.append(resp2)
+                    resp = _compose_responses(*completed_responses)
+                    resp["thinking"] = phase1_resp["thinking"] + resp2.get("thinking", "")
+                else:
+                    resp = _compose_responses(*completed_responses)
 
                 resp["error"] = ""
                 break  # success
             except Interrupted:
                 self.tui.stream_end(tab=worker_id)
                 logger.info("[%s] interrupted", worker_id)
-                resp = {"result": "(terminated by user)", "cost": 0.0,
-                        "duration_ms": 0, "raw": {}, "error": "interrupted"}
+                accounting = _compose_responses(*completed_responses) if completed_responses else {}
+                resp = {"result": "(terminated by user)", "cost": accounting.get("cost", 0.0),
+                        "duration_ms": accounting.get("duration_ms", 0),
+                        "raw": accounting.get("raw", {}), "error": "interrupted"}
                 break
             except RuntimeError as e:
                 self.tui.stream_end(tab=worker_id)
@@ -1923,8 +1953,10 @@ class Prover:
                 if action == "retry":
                     continue
                 self.tui.tab_log(worker_id, f"Error: {e}", color="red")
-                resp = {"result": f"Worker error: {e}", "cost": 0.0,
-                        "duration_ms": 0, "raw": {}, "error": str(e)}
+                accounting = _compose_responses(*completed_responses) if completed_responses else {}
+                resp = {"result": f"Worker error: {e}", "cost": accounting.get("cost", 0.0),
+                        "duration_ms": accounting.get("duration_ms", 0),
+                        "raw": accounting.get("raw", {}), "error": str(e)}
                 break
         resp["tool_calls_log"] = tool_calls_log
         return resp
@@ -1949,6 +1981,7 @@ class Prover:
         ]
         total_cost = 0.0
         total_duration = 0
+        responses: list[dict] = []
         call_idx = 0
         conversation_id = None  # Mistral stateful conversation
 
@@ -1995,6 +2028,7 @@ class Prover:
                     )
                     self.tui.stream_end(tab=worker_id)
                     resp = _use_thinking_as_result(resp)
+                    responses.append(resp)
                     total_cost += resp["cost"]
                     total_duration += resp["duration_ms"]
                     break
@@ -2032,6 +2066,7 @@ class Prover:
                         **phase2_kwargs,
                     )
                     self.tui.stream_end(tab=worker_id)
+                    responses.append(resp)
                     total_cost += resp["cost"]
                     total_duration += resp["duration_ms"]
                     break
@@ -2054,6 +2089,7 @@ class Prover:
                 )
                 self.tui.stream_end(tab=worker_id)
                 resp = _use_thinking_as_result(resp)
+                responses.append(resp)
                 total_cost += resp["cost"]
                 total_duration += resp["duration_ms"]
                 if resp.get("conversation_id"):
@@ -2148,6 +2184,7 @@ class Prover:
                         **phase2_kwargs,
                     )
                     self.tui.stream_end(tab=worker_id)
+                    responses.append(resp)
                     total_cost += resp["cost"]
                     total_duration += resp["duration_ms"]
                     break
@@ -2155,29 +2192,31 @@ class Prover:
                 # Unknown finish reason - treat as done
                 break
 
-            result = {
-                "result": resp["result"],
-                "thinking": resp.get("thinking", ""),
-                "cost": total_cost,
-                "duration_ms": total_duration,
-                "raw": resp["raw"],
-                "finish_reason": resp.get("finish_reason", "stop"),
-                "error": "",
-            }
+            result = _compose_responses(*responses)
+            result["error"] = ""
         except Interrupted:
             self.tui.stream_end(tab=worker_id)
             logger.info("[%s] interrupted", worker_id)
             result = {"result": "(terminated by user)", "cost": total_cost,
-                      "duration_ms": total_duration, "raw": {}, "error": "interrupted"}
+                      "duration_ms": total_duration,
+                      "raw": _compose_responses(*responses)["raw"] if responses else {},
+                      "error": "interrupted"}
         except RuntimeError as e:
             self.tui.stream_end(tab=worker_id)
             action = self._check_error_policy(e)
             if action == "retry":
                 # Retry: re-enter the multi-turn loop from scratch
-                return self._run_worker_multi_turn(prompt, system_prompt, worker_id, archive_path)
+                retry_result = self._run_worker_multi_turn(prompt, system_prompt, worker_id, archive_path)
+                if responses:
+                    result = _compose_responses(*responses, retry_result)
+                    result["tool_calls_log"] = retry_result["tool_calls_log"]
+                    return result
+                return retry_result
             self.tui.tab_log(worker_id, f"Error: {e}", color="red")
             result = {"result": f"Worker error: {e}", "cost": total_cost,
-                      "duration_ms": total_duration, "raw": {}, "error": str(e)}
+                      "duration_ms": total_duration,
+                      "raw": _compose_responses(*responses)["raw"] if responses else {},
+                      "error": str(e)}
 
         result["tool_calls_log"] = tool_calls_log
         return result
@@ -2245,6 +2284,8 @@ class Prover:
         """Run an independent verifier for a worker's output. Thread-safe."""
         prompt = prompts.format_verifier_prompt(task_desc, worker_output)
         system_prompt = prompts.verifier_system_prompt()
+        phase1_resp = None
+        completed_responses: list[dict] = []
 
         while True:
             self.tui.stream_start("verifying...", tab=verifier_id)
@@ -2258,11 +2299,13 @@ class Prover:
                 )
                 self.tui.stream_end(tab=verifier_id)
                 resp = _use_thinking_as_result(resp)
+                completed_responses.append(resp)
 
                 # Phase 2: if truncated, force a verdict
                 if resp.get("finish_reason") in ("length", "max_tokens"):
                     logger.info("[%s] truncated - Phase 2", verifier_id)
                     self.tui.stream_start("forcing verdict...", tab=verifier_id)
+                    phase1_resp = resp
                     answer_reserve = getattr(self.worker_llm, 'answer_reserve', None)
                     phase2_max = answer_reserve or 4_000
 
@@ -2313,29 +2356,30 @@ class Prover:
                         )
                     self.tui.stream_end(tab=verifier_id)
                     resp2 = _use_thinking_as_result(resp2)
-                    resp = {
-                        "result": resp["result"] + "\n\n" + resp2["result"],
-                        "thinking": resp.get("thinking", ""),
-                        "cost": resp["cost"] + resp2["cost"],
-                        "duration_ms": resp["duration_ms"] + resp2["duration_ms"],
-                        "raw": resp2["raw"],
-                        "finish_reason": resp2.get("finish_reason", "stop"),
-                    }
+                    completed_responses.append(resp2)
+                    resp = _compose_responses(*completed_responses)
+                    resp["result"] = phase1_resp["result"] + "\n\n" + resp2["result"]
+                else:
+                    resp = _compose_responses(*completed_responses)
 
                 resp["error"] = ""
                 break  # success
             except Interrupted:
                 self.tui.stream_end(tab=verifier_id)
                 logger.info("[%s] interrupted", verifier_id)
-                resp = {"result": "(terminated by user)", "cost": 0.0,
-                        "duration_ms": 0, "raw": {}, "error": "interrupted"}
+                accounting = _compose_responses(*completed_responses) if completed_responses else {}
+                resp = {"result": "(terminated by user)", "cost": accounting.get("cost", 0.0),
+                        "duration_ms": accounting.get("duration_ms", 0),
+                        "raw": accounting.get("raw", {}), "error": "interrupted"}
                 break
             except RuntimeError as e:
                 self.tui.stream_end(tab=verifier_id)
                 if self._check_error_policy(e) == "retry":
                     continue
-                resp = {"result": f"Verifier error: {e}", "cost": 0.0,
-                        "duration_ms": 0, "raw": {}, "error": str(e)}
+                accounting = _compose_responses(*completed_responses) if completed_responses else {}
+                resp = {"result": f"Verifier error: {e}", "cost": accounting.get("cost", 0.0),
+                        "duration_ms": accounting.get("duration_ms", 0),
+                        "raw": accounting.get("raw", {}), "error": str(e)}
                 break
         return resp
 

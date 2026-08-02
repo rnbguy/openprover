@@ -53,12 +53,13 @@ class Budget:
     """Tracks resource budget (output tokens or wall-clock time)."""
 
     def __init__(self, mode: str, limit: int,
-                 conclude_after: float = 0.99):
+                 conclude_after: float = 0.99,
+                 initial_output_tokens: int = 0):
         assert mode in ("tokens", "time"), f"Invalid budget mode: {mode}"
         self.mode = mode
         self.limit = limit
         self.conclude_after = conclude_after
-        self.total_output_tokens = 0
+        self.total_output_tokens = initial_output_tokens
         self.start_time = time.monotonic()
 
     def fraction_spent(self) -> float:

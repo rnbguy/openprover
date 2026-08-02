@@ -41,6 +41,7 @@ def _save_run_config(work_dir: Path, *, planner_model: str, worker_model: str,
         f'worker_model = "{worker_model}"',
         f'budget_mode = "{budget_mode}"',
         f'budget_limit = {budget_limit}',
+        'budget_output_tokens = 0',
         f'conclude_after = {conclude_after}',
         f'max_workers = {max_workers}',
         f'isolation = {str(isolation).lower()}',
@@ -320,9 +321,30 @@ def _cmd_prove():
     TOOL_CAPABLE_MODELS = (VLLM_MODELS | CLAUDE_MODELS | MISTRAL_MODELS
                            | CODEX_MODELS | GLM_MODELS | OPENROUTER_MODELS)
 
+    initial_output_tokens = 0
+
     # ── On resume, load saved config and apply as defaults ──
     if resuming:
-        saved = _load_run_config(work_dir)
+        try:
+            saved = _load_run_config(work_dir)
+        except ValueError:
+            parser.error("saved run_config.toml is invalid")
+            return
+        if saved is None:
+            parser.error("saved run_config.toml is missing")
+            return
+        if not saved:
+            parser.error("saved run_config.toml is empty")
+            return
+        token_state_lines = re.findall(
+            r"^budget_output_tokens[ \t]*=.*$",
+            (work_dir / RUN_CONFIG_FILE).read_text(),
+            re.MULTILINE,
+        )
+        if len(token_state_lines) != 1:
+            parser.error(
+                "saved run_config.toml must contain exactly one budget_output_tokens line"
+            )
         if saved:
             saved_version = saved.get("version", "")
             if saved_version and saved_version != __version__:
@@ -330,6 +352,11 @@ def _cmd_prove():
                     f"Version mismatch: run was created with openprover "
                     f"v{saved_version}, but current version is v{__version__}. "
                     f"Cannot resume across different versions."
+                )
+            initial_output_tokens = saved.get("budget_output_tokens")
+            if type(initial_output_tokens) is not int or initial_output_tokens < 0:
+                parser.error(
+                    "saved budget_output_tokens must be a nonnegative integer"
                 )
             # Restore settings from saved config; CLI flags override
             if not args.planner_model and not _cli_flag_given("--model"):
@@ -507,6 +534,7 @@ def _cmd_prove():
         mode=budget_mode,
         limit=budget_limit,
         conclude_after=args.conclude_after,
+        initial_output_tokens=initial_output_tokens,
     )
 
     # Save config on fresh start

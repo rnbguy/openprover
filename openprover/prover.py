@@ -252,6 +252,7 @@ class Prover:
         self._interrupt_count = 0
         self._last_interrupt_time = 0.0
         self._interrupt_lock = threading.Lock()
+        self._budget_persistence_lock = threading.Lock()
         self.step_num = 0
         self._step_idx = 0
         self.step_history: list[dict] = []  # rolling window of last 3 steps
@@ -424,7 +425,6 @@ class Prover:
 
         if self.resumed:
             self._load_history()
-            self._restore_budget_tokens()
             self.tui.log(
                 f"Resuming from step {self.step_num} ({self.budget.status_str()} spent)",
                 color="cyan",
@@ -2534,24 +2534,34 @@ class Prover:
         tokens = self._extract_token_usage(resp)
         n = tokens["output_tokens"]
         if n > 0:
-            self.budget.add_output_tokens(n)
-            self.tui.update_budget(self.budget.status_str())
-
-    def _restore_budget_tokens(self):
-        """On resume, sum output tokens from existing meta.toml files."""
-        if self.budget.mode != "tokens":
-            return
-        steps_dir = self.work_dir / "steps"
-        if not steps_dir.exists():
-            return
-        total = 0
-        for meta_path in sorted(steps_dir.glob("step_*/meta.toml")):
-            text = meta_path.read_text()
-            for m in re.finditer(r'^output_tokens\s*=\s*(\d+)', text, re.MULTILINE):
-                total += int(m.group(1))
-        if total > 0:
-            self.budget.add_output_tokens(total)
-            logger.info("Restored %d output tokens from history", total)
+            with self._budget_persistence_lock:
+                total_output_tokens = self.budget.total_output_tokens + n
+                config_path = self.work_dir / "run_config.toml"
+                config_text = config_path.read_text()
+                token_state_lines = re.findall(
+                    r"^budget_output_tokens[ \t]*=.*$",
+                    config_text,
+                    re.MULTILINE,
+                )
+                if len(token_state_lines) != 1:
+                    raise RuntimeError(
+                        "run_config.toml must contain exactly one budget_output_tokens line"
+                    )
+                config, replacements = re.subn(
+                    r"^budget_output_tokens[ \t]*=[ \t]*\d+$",
+                    f"budget_output_tokens = {total_output_tokens}",
+                    config_text,
+                    flags=re.MULTILINE,
+                )
+                if replacements != 1:
+                    raise RuntimeError(
+                        "run_config.toml budget_output_tokens must be a nonnegative integer"
+                    )
+                temp_path = config_path.with_name(f"{config_path.name}.tmp")
+                temp_path.write_text(config)
+                temp_path.replace(config_path)
+                self.budget.add_output_tokens(n)
+                self.tui.update_budget(self.budget.status_str())
 
     def _save_step_meta(self, step_dir: Path, *,
                         status: str,

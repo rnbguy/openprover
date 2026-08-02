@@ -35,6 +35,13 @@ def _use_thinking_as_result(resp: dict) -> dict:
     return resp
 
 
+def _call_phase2(llm, **kwargs):
+    """Dispatch a phase-two call with Claude-only reasoning suppression."""
+    if isinstance(llm, LLMClient):
+        return llm.call(no_thinking=True, **kwargs)
+    return llm.call(**kwargs)
+
+
 def _format_tool_calls_toml(tc_log: list[dict]) -> str:
     """Format a tool calls log as TOML [[call]] entries."""
     lines = []
@@ -762,14 +769,14 @@ class Prover:
                                 )
                             else:
                                 phase2_prompt = prompts.format_planner_truncated(prompt, resp["result"])
-                                resp = self.planner_llm.call(
+                                resp = _call_phase2(
+                                    self.planner_llm,
                                     prompt=phase2_prompt,
                                     system_prompt=system_prompt,
                                     label=f"planner_step_{self.step_num}_phase2",
                                     stream_callback=self._stream_cb("planner", output_only=True),
                                     archive_path=step_dir / "planner_call_phase2.md",
                                     max_tokens=phase2_max,
-                                    no_thinking=True,
                                 )
                             break  # success
                         except Interrupted:
@@ -1883,14 +1890,14 @@ class Prover:
                             f"Previous output (last 2000 chars):\n"
                             f"```\n{resp['result'][-2000:]}\n```"
                         )
-                        resp2 = self.worker_llm.call(
+                        resp2 = _call_phase2(
+                            self.worker_llm,
                             prompt=phase2_prompt,
                             system_prompt=system_prompt,
                             label=f"{worker_id}_phase2",
                             stream_callback=self._stream_cb(worker_id, output_only=True),
                             archive_path=archive_path.parent / f"{archive_path.stem}_phase2.md" if archive_path else None,
                             max_tokens=phase2_max,
-                            no_thinking=True,
                         )
                     self.tui.stream_end(tab=worker_id)
                     resp = {
@@ -2295,14 +2302,14 @@ class Prover:
                             f"VERDICT: CRITICALLY FLAWED - <brief reason>\n"
                             f"VERDICT: NEEDS MINOR FIXES - <brief reason>"
                         )
-                        resp2 = self.worker_llm.call(
+                        resp2 = _call_phase2(
+                            self.worker_llm,
                             prompt=phase2_prompt,
                             system_prompt=system_prompt,
                             label=f"{verifier_id}_phase2",
                             stream_callback=self._stream_cb(verifier_id, output_only=True),
                             archive_path=archive_path.parent / f"{archive_path.stem}_phase2.md" if archive_path else None,
                             max_tokens=phase2_max,
-                            no_thinking=True,
                         )
                     self.tui.stream_end(tab=verifier_id)
                     resp2 = _use_thinking_as_result(resp2)

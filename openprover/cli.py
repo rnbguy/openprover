@@ -2,6 +2,7 @@
 
 import argparse
 import atexit
+import math
 import os
 import re
 import signal
@@ -10,7 +11,7 @@ from datetime import datetime
 from pathlib import Path
 
 from openprover import __version__
-from .budget import Budget, parse_duration
+from .budget import Budget, ELAPSED_SECONDS_LINE_PATTERN, parse_duration
 from .llm import CodexClient, LLMClient, GLMClient, HFClient, MistralClient, OpenRouterClient
 from .prover import Prover, slugify
 from .tui import TUI, HeadlessTUI
@@ -42,6 +43,7 @@ def _save_run_config(work_dir: Path, *, planner_model: str, worker_model: str,
         f'budget_mode = "{budget_mode}"',
         f'budget_limit = {budget_limit}',
         'budget_output_tokens = 0',
+        'budget_elapsed_seconds = 0.0',
         f'conclude_after = {conclude_after}',
         f'max_workers = {max_workers}',
         f'isolation = {str(isolation).lower()}',
@@ -322,9 +324,45 @@ def _cmd_prove():
                            | CODEX_MODELS | GLM_MODELS | OPENROUTER_MODELS)
 
     initial_output_tokens = 0
+    initial_elapsed_seconds = 0.0
+    elapsed_state_line = ""
 
     # ── On resume, load saved config and apply as defaults ──
     if resuming:
+        config_path = work_dir / RUN_CONFIG_FILE
+        config_text = config_path.read_text() if config_path.exists() else ""
+        if config_text:
+            token_state_lines = re.findall(
+                r"^budget_output_tokens[ \t]*=.*$",
+                config_text,
+                re.MULTILINE,
+            )
+            if len(token_state_lines) != 1:
+                parser.error(
+                    "saved run_config.toml must contain exactly one "
+                    "budget_output_tokens line"
+                )
+            _, token_replacements = re.subn(
+                r"^budget_output_tokens[ \t]*=[ \t]*\d+$",
+                "budget_output_tokens = 0",
+                config_text,
+                flags=re.MULTILINE,
+            )
+            if token_replacements != 1:
+                parser.error(
+                    "saved budget_output_tokens must be a nonnegative integer"
+                )
+            elapsed_state_lines = re.findall(
+                r"^[ \t]*budget_elapsed_seconds\b.*$",
+                config_text,
+                re.MULTILINE,
+            )
+            if len(elapsed_state_lines) != 1:
+                parser.error(
+                    "saved run_config.toml must contain exactly one "
+                    "budget_elapsed_seconds line"
+                )
+            elapsed_state_line = elapsed_state_lines[0]
         try:
             saved = _load_run_config(work_dir)
         except ValueError:
@@ -358,6 +396,19 @@ def _cmd_prove():
                 parser.error(
                     "saved budget_output_tokens must be a nonnegative integer"
                 )
+            match saved.get("budget_elapsed_seconds"):
+                case int() as elapsed_seconds if type(elapsed_seconds) is int and elapsed_seconds >= 0:
+                    initial_elapsed_seconds = float(elapsed_seconds)
+                case float() as elapsed_seconds if (type(elapsed_seconds) is float
+                                                   and math.isfinite(elapsed_seconds)
+                                                   and elapsed_seconds >= 0):
+                    initial_elapsed_seconds = elapsed_seconds
+                case _:
+                    parser.error(
+                        "saved budget_elapsed_seconds must be a nonnegative number"
+                    )
+            if not re.fullmatch(ELAPSED_SECONDS_LINE_PATTERN, elapsed_state_line):
+                parser.error("saved run_config.toml is invalid")
             # Restore settings from saved config; CLI flags override
             if not args.planner_model and not _cli_flag_given("--model"):
                 args.model = saved.get("planner_model", args.model)
@@ -535,6 +586,7 @@ def _cmd_prove():
         limit=budget_limit,
         conclude_after=args.conclude_after,
         initial_output_tokens=initial_output_tokens,
+        initial_elapsed_seconds=initial_elapsed_seconds,
     )
 
     # Save config on fresh start

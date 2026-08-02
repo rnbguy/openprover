@@ -655,8 +655,7 @@ class RenderMixin:
                     budget = getattr(self, '_budget_ref', None)
                     if budget:
                         from ..budget import _fmt_tokens, _fmt_duration
-                        import time as _time
-                        elapsed = int(_time.monotonic() - budget.start_time)
+                        elapsed = int(budget.elapsed_seconds())
                         tok_str = _fmt_tokens(budget.total_output_tokens)
                         self._write_raw(f'\n  {BOLD}Current usage{RESET}\n\n')
                         self._write_raw(f'    {DIM}{"elapsed":<16}{RESET}{_fmt_duration(elapsed)}\n')

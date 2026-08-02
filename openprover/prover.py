@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from . import prompts
-from .budget import Budget
+from .budget import Budget, ELAPSED_SECONDS_LINE_PATTERN, format_elapsed_seconds
 from .lean import LeanTheorem, LeanWorkDir, run_lean_check, lean_has_errors, WORKER_TOOLS, execute_worker_tool
 from .llm import Interrupted, CodexClient, LLMClient
 from .llm._base import is_transient_error
@@ -420,6 +420,18 @@ class Prover:
         }
 
     def run(self):
+        try:
+            self._run()
+        except BaseException:  # noqa: BROAD_EXCEPT_OK - preserve active interrupts and errors
+            try:
+                self._checkpoint_budget_state()
+            except Exception:
+                logger.exception("Failed to checkpoint budget state")
+            raise
+        else:
+            self._checkpoint_budget_state()
+
+    def _run(self):
         self._setup_tui(autonomous=self.autonomous)
         self._setup_tui_logging()
 
@@ -2526,42 +2538,69 @@ class Prover:
         self._transient_backoff = min(delay * 2, 60)
         return "retry"
 
+    def _checkpoint_budget_state(self, output_tokens: int = 0):
+        """Persist elapsed time and output tokens before updating the runtime state."""
+        with self._budget_persistence_lock:
+            total_output_tokens = self.budget.total_output_tokens + output_tokens
+            elapsed_seconds = self.budget.elapsed_seconds()
+            config_path = self.work_dir / "run_config.toml"
+            config_text = config_path.read_text()
+            token_state_lines = re.findall(
+                r"^budget_output_tokens[ \t]*=.*$",
+                config_text,
+                re.MULTILINE,
+            )
+            if len(token_state_lines) != 1:
+                raise RuntimeError(
+                    "run_config.toml must contain exactly one budget_output_tokens line"
+                )
+            config, token_replacements = re.subn(
+                r"^budget_output_tokens[ \t]*=[ \t]*\d+$",
+                f"budget_output_tokens = {total_output_tokens}",
+                config_text,
+                flags=re.MULTILINE,
+            )
+            if token_replacements != 1:
+                raise RuntimeError(
+                    "run_config.toml budget_output_tokens must be a nonnegative integer"
+                )
+            elapsed_state_lines = re.findall(
+                r"^budget_elapsed_seconds[ \t]*=.*$",
+                config_text,
+                re.MULTILINE,
+            )
+            if len(elapsed_state_lines) != 1:
+                raise RuntimeError(
+                    "run_config.toml must contain exactly one budget_elapsed_seconds line"
+                )
+            if not re.fullmatch(ELAPSED_SECONDS_LINE_PATTERN, elapsed_state_lines[0]):
+                raise RuntimeError(
+                    "run_config.toml budget_elapsed_seconds must be a nonnegative number"
+                )
+            config, elapsed_replacements = re.subn(
+                ELAPSED_SECONDS_LINE_PATTERN,
+                f"budget_elapsed_seconds = {format_elapsed_seconds(elapsed_seconds)}",
+                config,
+                flags=re.MULTILINE,
+            )
+            if elapsed_replacements != 1:
+                raise RuntimeError(
+                    "run_config.toml budget_elapsed_seconds must be a nonnegative number"
+                )
+            temp_path = config_path.with_name(f"{config_path.name}.tmp")
+            temp_path.write_text(config)
+            temp_path.replace(config_path)
+            if output_tokens > 0:
+                self.budget.add_output_tokens(output_tokens)
+            self.tui.update_budget(self.budget.status_str())
+
     def _track_output_tokens(self, resp: dict):
         """Add output tokens from an LLM response to the budget."""
         self._backoff_delay = 4  # reset on success
         self._rate_limit_backoff = 4  # reset on success
         self._transient_backoff = 4  # reset on success
         tokens = self._extract_token_usage(resp)
-        n = tokens["output_tokens"]
-        if n > 0:
-            with self._budget_persistence_lock:
-                total_output_tokens = self.budget.total_output_tokens + n
-                config_path = self.work_dir / "run_config.toml"
-                config_text = config_path.read_text()
-                token_state_lines = re.findall(
-                    r"^budget_output_tokens[ \t]*=.*$",
-                    config_text,
-                    re.MULTILINE,
-                )
-                if len(token_state_lines) != 1:
-                    raise RuntimeError(
-                        "run_config.toml must contain exactly one budget_output_tokens line"
-                    )
-                config, replacements = re.subn(
-                    r"^budget_output_tokens[ \t]*=[ \t]*\d+$",
-                    f"budget_output_tokens = {total_output_tokens}",
-                    config_text,
-                    flags=re.MULTILINE,
-                )
-                if replacements != 1:
-                    raise RuntimeError(
-                        "run_config.toml budget_output_tokens must be a nonnegative integer"
-                    )
-                temp_path = config_path.with_name(f"{config_path.name}.tmp")
-                temp_path.write_text(config)
-                temp_path.replace(config_path)
-                self.budget.add_output_tokens(n)
-                self.tui.update_budget(self.budget.status_str())
+        self._checkpoint_budget_state(tokens["output_tokens"])
 
     def _save_step_meta(self, step_dir: Path, *,
                         status: str,

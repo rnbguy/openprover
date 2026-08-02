@@ -452,7 +452,7 @@ def _cmd_prove():
 
     def _make_client(model_alias, archive_dir):
         if model_alias in CODEX_MODELS:
-            return CodexClient("gpt-5.4", archive_dir)
+            return CodexClient("gpt-5.6-sol", archive_dir)
         if model_alias in MISTRAL_MODEL_MAP:
             return MistralClient(MISTRAL_MODEL_MAP[model_alias], archive_dir,
                                  answer_reserve=args.answer_reserve)
@@ -483,7 +483,7 @@ def _cmd_prove():
     def make_worker_llm(archive_dir):
         return _make_client(worker_model, archive_dir)
 
-    MODEL_DISPLAY = {"sonnet": "sonnet 4.6", "opus": "opus 4.6", "gpt": "gpt 5.4", "leanstral": "leanstral", "glm-5": "glm-5", "kimi-k2.5": "kimi-k2.5", "minimax-m2.7": "minimax-m2.7"}
+    MODEL_DISPLAY = {"sonnet": "sonnet 4.6", "opus": "opus 4.6", "gpt": "gpt-5.6-sol", "leanstral": "leanstral", "glm-5": "glm-5", "kimi-k2.5": "kimi-k2.5", "minimax-m2.7": "minimax-m2.7"}
     _p = MODEL_DISPLAY.get(planner_model, planner_model)
     _w = MODEL_DISPLAY.get(worker_model, worker_model)
     model_label = _p if planner_model == worker_model else f"{_p}/{_w}"

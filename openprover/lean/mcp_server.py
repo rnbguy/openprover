@@ -8,22 +8,30 @@ Environment variables:
     LEAN_WORK_DIR: Path to working directory for temporary Lean files
 """
 
-import asyncio
 import os
-import sys
 from pathlib import Path
+from threading import Lock
 
-from mcp.server.fastmcp import FastMCP
+from mcp.server import MCPServer
 
-from .core import LeanWorkDir, lean_has_errors, merge_lean_imports, run_lean_check, strip_code_fences
+from openprover import __version__
 
-mcp = FastMCP("lean_tools")
+from .core import (
+    LeanWorkDir,
+    lean_has_errors,
+    merge_lean_imports,
+    run_lean_check,
+    strip_code_fences,
+)
+
+mcp = MCPServer("lean_tools", version=__version__)
 
 # Initialized lazily from environment variables
 _project_dir: Path | None = None
 _work_dir: LeanWorkDir | None = None
 _search_service = None
 _store: str = ""  # per-process store (each worker gets its own MCP subprocess)
+_store_lock = Lock()
 
 
 def _get_project_dir() -> Path:
@@ -75,7 +83,7 @@ def _get_search_service():
     return _search_service
 
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 def lean_verify(code: str) -> str:
     """Verify Lean 4 code. Returns compiler output (errors/warnings or OK). Code from lean_store is automatically prepended."""
     code = strip_code_fences(code)
@@ -83,7 +91,9 @@ def lean_verify(code: str) -> str:
         raise ValueError("no code provided")
     work_dir = _get_work_dir()
     project_dir = _get_project_dir()
-    full_code = merge_lean_imports(_store, code) if _store else code
+    with _store_lock:
+        store = _store
+    full_code = merge_lean_imports(store, code) if store else code
     path = work_dir.make_file("mcp_verify", full_code)
     success, feedback, _cmd_info = run_lean_check(path, project_dir)
     if success:
@@ -96,13 +106,13 @@ def lean_verify(code: str) -> str:
                 "lean_store will REJECT code with sorry. You must fill ALL sorry "
                 "holes with actual proof terms before storing."
             )
-    if _store:
-        store_lines = len(_store.splitlines())
+    if store:
+        store_lines = len(store.splitlines())
         result = f"({store_lines} lines from lean_store were automatically prepended)\n{result}"
     return result
 
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 def lean_store(code: str) -> str:
     """Store a verified Lean 4 snippet (lemma, definition, etc.) into the persistent prefix. Stored code is automatically prepended to all subsequent lean_verify calls. The snippet must compile without errors or sorry. Imports are automatically deduplicated."""
     global _store
@@ -111,20 +121,21 @@ def lean_store(code: str) -> str:
         raise ValueError("no code provided")
     work_dir = _get_work_dir()
     project_dir = _get_project_dir()
-    candidate = merge_lean_imports(_store, code)
-    path = work_dir.make_file("mcp_store", candidate)
-    success, feedback, _cmd_info = run_lean_check(path, project_dir)
-    if not success:
-        if lean_has_errors(feedback):
-            return feedback
-        if "sorry" in feedback.lower():
-            return f"Store rejected: code contains sorry\n{feedback}"
-        # Non-sorry warnings are acceptable
-    _store = candidate
-    return f"OK - stored.\n\nCurrent store:\n```lean\n{candidate}\n```"
+    with _store_lock:
+        candidate = merge_lean_imports(_store, code)
+        path = work_dir.make_file("mcp_store", candidate)
+        success, feedback, _cmd_info = run_lean_check(path, project_dir)
+        if not success:
+            if lean_has_errors(feedback):
+                return feedback
+            if "sorry" in feedback.lower():
+                return f"Store rejected: code contains sorry\n{feedback}"
+            # Non-sorry warnings are acceptable
+        _store = candidate
+        return f"OK - stored.\n\nCurrent store:\n```lean\n{candidate}\n```"
 
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 async def lean_search(query: str) -> str:
     """Search Lean 4 declarations by name or natural language description. Query with a declaration name (e.g. 'List.map', 'Nat.Prime') or an informal description (e.g. 'continuous function on a compact set'). Uses hybrid retrieval (lexical + semantic)."""
     if not query.strip():

@@ -1,10 +1,12 @@
 """Typed Codex turn-stream normalization."""
 
 import re
+import sys
+from contextlib import suppress
 from dataclasses import dataclass, field
 from typing import Final, Protocol
 
-from openai_codex import TurnHandle, TurnResult
+from openai_codex import InvalidRequestError, TurnHandle, TurnResult
 from openai_codex.models import (
     AgentMessageDeltaNotification,
     ItemCompletedNotification,
@@ -74,10 +76,20 @@ def run_turn(turn: TurnHandle, callbacks: StreamCallbacks) -> tuple[TurnResult, 
 
     state = _StreamState()
     stream = turn.stream()
+    turn_completed = False
     try:
         for event in stream:
             _handle_event(event, state, callbacks)
+        turn_completed = state.completed is not None
     finally:
+        if not turn_completed:
+            if sys.exc_info()[0] is None:
+                with suppress(InvalidRequestError):
+                    turn.interrupt()
+            else:
+                # Preserve the callback failure if best-effort cancellation also fails.
+                with suppress(Exception):
+                    turn.interrupt()
         stream.close()
     if state.completed is None:
         raise RuntimeError("Codex turn completed without a typed completion event")

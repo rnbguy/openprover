@@ -48,7 +48,7 @@ class CodexClient:
         self.total_cost = 0.0
         self.mcp_config: JsonObject | None = None
         self._codex: Codex | None = None
-        self._sdk_lock = threading.Lock()
+        self._sdk_lock = threading.RLock()
         self._turn_lock = threading.Lock()
         self._interrupted = threading.Event()
         self._active_turns: dict[str, TurnHandle] = {}

@@ -119,7 +119,7 @@ When `lean_worker_tools` is enabled, sets up tool calling for workers:
 | `_handle_write_whiteboard` | Update the whiteboard without spawning workers. |
 | `_handle_read_theorem` | Return THEOREM.md + THEOREM.lean + PROOF.md content to the planner. |
 | `_handle_submit_proof` | Save proof to `PROOF.md`. Terminates the session in `prove` mode. |
-| `_handle_submit_lean_proof` | Assembles and verifies Lean proof via `lake env lean`, writes `PROOF.lean` on success. Terminates the session in `formalize_only` mode; in `prove_and_formalize`, the session ends when both informal and formal proofs are accepted. |
+| `_handle_submit_lean_proof` | Assembles the final Lean submission, compiles it via `lake env lean`, then audits the exact submitted theorem declarations' transitive axioms. Only `propext`, `Classical.choice`, and `Quot.sound` are allowed. Writes `PROOF.lean` only if both pass; otherwise returns compiler or axiom feedback. Terminates the session in `formalize_only` mode; in `prove_and_formalize`, the session ends when both informal and formal proofs are accepted. |
 
 **`Repo` class** (also in `prover.py`):
 - `list_summaries()`: Returns index of all items (name + first-line summary)
@@ -361,7 +361,7 @@ runs/<slug>-<timestamp>/
 **Formal verification** (lean modes): When `--lean-project` is provided, the system supports automatic Lean 4 verification:
 
 - **`write_items` with `format="lean"`**: Lean items are written to the `OpenProver-{id}/` subdirectory within the Lean project and verified via `lake env lean`. The planner receives pass/fail feedback with compiler errors.
-- **`submit_lean_proof`**: The planner provides N replacement blocks (one per `sorry` in THEOREM.lean) plus optional context. The system assembles the complete file, verifies it, and writes PROOF.lean on success. On failure, compiler errors are fed back.
+- **`submit_lean_proof`**: The planner provides N replacement blocks (one per `sorry` in THEOREM.lean) plus optional context. The system assembles and compiles the complete file, then audits the exact submitted theorem declarations' transitive axioms. Only `propext`, `Classical.choice`, and `Quot.sound` are allowed. `PROOF.lean` is written only if both checks pass; otherwise compiler or axiom feedback is returned.
 - **`read_theorem`**: Returns THEOREM.md, THEOREM.lean, and PROOF.md (if provided) content so the planner can reference the formal statement.
 
 **Worker tools** (when `--lean-worker-tools` is enabled): Workers can directly verify Lean code (`lean_verify`), store verified snippets (`lean_store`), and search Lean libraries (`lean_search`) during their reasoning. Tool calls are shown in the TUI worker tab.

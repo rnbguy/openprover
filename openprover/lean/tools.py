@@ -1,10 +1,10 @@
 """Lean tool definitions and execution for vLLM worker tool-calling."""
 
-import asyncio
 import logging
 import time
 
 from .core import LeanWorkDir, lean_has_errors, merge_lean_imports, run_lean_check, strip_code_fences
+from .search import search
 
 logger = logging.getLogger("openprover.lean")
 
@@ -50,7 +50,7 @@ WORKER_TOOLS = [
         "type": "function",
         "function": {
             "name": "lean_search",
-            "description": "Search Lean 4 declarations by name or natural language description. Supports two query styles: by declaration name (e.g. 'List.map', 'Nat.Prime') or by meaning (e.g. 'continuous function on a compact set'). Uses hybrid retrieval (lexical + semantic) so both styles work automatically.",
+            "description": "Search hosted Lean 4 declarations by name or natural language description.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -72,7 +72,6 @@ def execute_worker_tool(
     worker_id: str,
     lean_work_dir: LeanWorkDir | None,
     lean_project_dir,
-    lean_explore_service,
 ) -> tuple[str, str]:
     """Execute a worker tool call. Returns (result_text, status)."""
     if name == "lean_verify":
@@ -80,7 +79,7 @@ def execute_worker_tool(
     if name == "lean_store":
         return _tool_lean_store(args, worker_id, lean_work_dir, lean_project_dir)
     if name == "lean_search":
-        return _tool_lean_search(args, worker_id, lean_explore_service)
+        return _tool_lean_search(args, worker_id)
     return (f"Unknown tool: {name}", "error")
 
 
@@ -175,7 +174,7 @@ def _tool_lean_store(
     return (f"OK - stored.\n\nCurrent store:\n```lean\n{candidate}\n```", "ok")
 
 
-# Track consecutive empty results per worker to detect broken databases
+# Track consecutive empty results per worker to detect search service issues
 _empty_search_counts: dict[str, int] = {}
 _EMPTY_SEARCH_WARN_THRESHOLD = 3
 
@@ -186,7 +185,7 @@ def _log_empty_search_warning(worker_id: str, query: str) -> None:
     if count == _EMPTY_SEARCH_WARN_THRESHOLD:
         logger.warning(
             "[%s] lean_search returned 0 results for %d consecutive queries "
-            "(last: %r) — the search database may be corrupt or incomplete",
+            "(last: %r) — the hosted search service may be returning incomplete results",
             worker_id, count, query,
         )
 
@@ -194,25 +193,15 @@ def _log_empty_search_warning(worker_id: str, query: str) -> None:
 def _tool_lean_search(
     args: dict,
     worker_id: str,
-    lean_explore_service,
 ) -> tuple[str, str]:
     """Search Mathlib declarations."""
-    import torch
     query = args.get("query", "")
     if not query:
         return ("No query provided", "error")
-    if not lean_explore_service:
-        return ("lean_search not available (lean_explore not installed)", "error")
 
-    rerank = 25 if torch.cuda.is_available() else 0
     try:
         t0 = time.time()
-        response = asyncio.run(
-            lean_explore_service.search(
-                query, limit=10, rerank_top=rerank,
-                packages=["Mathlib", "Batteries", "Init", "Lean", "Std"],
-            )
-        )
+        response = search(query, limit=10)
         elapsed = time.time() - t0
         results = response.results
         logger.info("[%s] lean_search query=%r returned %d results in %.1fs",

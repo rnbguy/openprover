@@ -455,7 +455,8 @@ def planner_system_prompt(*, isolation: bool = False,
     )
 
 def worker_system_prompt(*, lean_worker_tools: bool = False,
-                         lean_store_available: bool = False) -> str:
+                         lean_store_available: bool = False,
+                         lean_verify_available: bool = True) -> str:
     """Build worker system prompt, optionally documenting tool actions."""
     base = (
         "You are a research mathematician working on a specific task.\n"
@@ -481,8 +482,13 @@ def worker_system_prompt(*, lean_worker_tools: bool = False,
         "IMPORTANT: You are a single worker. Do NOT attempt to spawn subagents, delegate to other workers, "
         "or \"launch agents in parallel\". You do all the work yourself, directly in your response.\n"
         "\n"
-        "IMPORTANT: You have NO web access, NO search capability, and NO access to external databases or papers. "
-        "Do not attempt literature searches or cite specific papers — you will hallucinate references. "
+        "IMPORTANT: You have NO web access, NO literature search capability, and NO access to external databases or papers. "
+        + (
+            "The only search available to you is hosted lean_search for Lean declarations. "
+            if lean_worker_tools
+            else "You have NO search capability. "
+        )
+        + "Do not attempt literature searches or cite specific papers — you will hallucinate references. "
         "Work from first principles using your mathematical knowledge.\n"
         "\n"
         "IMPORTANT: All reasoning must happen in your thinking trace, not in your output. "
@@ -491,6 +497,17 @@ def worker_system_prompt(*, lean_worker_tools: bool = False,
         "Your thinking budget is for exploration; your output is for results.\n"
     )
     if lean_worker_tools:
+        if not lean_verify_available:
+            return base + (
+                "\n"
+                "## Available Tools\n"
+                "\n"
+                "You have access to the following tool:\n"
+                "\n"
+                "- **lean_search(query)**: Search Lean 4 declarations across Batteries, "
+                "Init, Lean, Mathlib, and Std by name or meaning. Query with a declaration "
+                "name or a natural language description.\n"
+            )
         if not lean_store_available:
             return base + (
                 "\n"

@@ -15,7 +15,8 @@ from typing import Final
 from . import prompts
 from .budget import Budget, BudgetExhausted, ELAPSED_SECONDS_LINE_PATTERN, format_elapsed_seconds
 from .lean import LeanTheorem, LeanWorkDir, run_lean_check, lean_has_errors, WORKER_TOOLS, execute_worker_tool
-from .llm import Interrupted, CodexClient, LLMClient
+from .llm import CodexClient, Interrupted, LLMClient
+from .llm.codex import CodexTurnError
 from .llm._base import is_transient_error
 from .tui import TUI
 from .tui._colors import YELLOW, GREEN, RESET as _RESET
@@ -362,7 +363,7 @@ class Prover:
                                     self.lean_work_dir.dir.resolve()
                                     if self.lean_work_dir else ""),
                             },
-                            "enabled_tools": ["lean_verify", "lean_search"],
+                            "enabled_tools": ["lean_search"],
                             "required": True,
                             "startup_timeout_ms": 30000,
                         }
@@ -1966,6 +1967,7 @@ class Prover:
         system_prompt = prompts.worker_system_prompt(
             lean_worker_tools=bool(use_tools),
             lean_store_available=bool(use_vllm_tools or use_mistral_tools),
+            lean_verify_available=not isinstance(self.worker_llm, CodexClient),
         )
 
         if use_vllm_tools or use_mistral_tools:
@@ -2779,6 +2781,17 @@ class Prover:
                 raise BudgetExhausted()
         try:
             resp = call(*args, **kwargs)
+        except (CodexTurnError, Interrupted) as exc:
+            try:
+                output_tokens = 0
+                if exc.response is not None:
+                    output_tokens = self._extract_token_usage(exc.response)[
+                        "output_tokens"
+                    ]
+                self._checkpoint_budget_state(output_tokens)
+            except Exception:
+                logger.exception("Failed to checkpoint budget state")
+            raise
         except BaseException:  # noqa: BROAD_EXCEPT_OK - preserve model exceptions
             try:
                 self._checkpoint_budget_state()

@@ -56,14 +56,20 @@ class LLMClient:
         """Kill all active subprocesses. Safe to call multiple times."""
         self._kill_active_procs()
 
+    def _terminate_proc(self, proc):
+        if proc.poll() is not None:
+            return
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except (OSError, ProcessLookupError):
+            proc.kill()
+
     def _kill_active_procs(self):
         with self._procs_lock:
-            for proc in self._active_procs:
-                if proc.poll() is None:
-                    try:
-                        os.killpg(proc.pid, signal.SIGKILL)
-                    except (OSError, ProcessLookupError):
-                        proc.kill()
+            procs = list(self._active_procs)
+        for proc in procs:
+            self._terminate_proc(proc)
+            proc.wait()
 
     def clear_interrupt(self):
         """Reset the interrupt flag so new calls can proceed."""
@@ -175,9 +181,11 @@ class LLMClient:
         try:
             stdout, stderr = proc.communicate(input=prompt)
         finally:
+            self._terminate_proc(proc)
             with self._procs_lock:
                 if proc in self._active_procs:
                     self._active_procs.remove(proc)
+            proc.wait()
         elapsed_ms = int((time.time() - start) * 1000)
 
         if proc.returncode != 0:
@@ -273,8 +281,6 @@ class LLMClient:
         )
         with self._procs_lock:
             self._active_procs.append(proc)
-        proc.stdin.write(prompt)
-        proc.stdin.close()
 
         result_data = None
         thinking_parts = []
@@ -292,14 +298,14 @@ class LLMClient:
         # Use readline() instead of iterator - the iterator uses an internal
         # read-ahead buffer that defeats real-time streaming.
         try:
+            proc.stdin.write(prompt)
+            proc.stdin.close()
             while True:
                 if self._interrupted.is_set():
                     interrupted = True
-                    proc.kill()
                     break
                 if self._soft_interrupted.is_set():
                     soft_interrupted = True
-                    proc.kill()
                     break
                 line = proc.stdout.readline()
                 if not line:
@@ -417,6 +423,7 @@ class LLMClient:
                 elif msg_type == "result":
                     result_data = msg
         finally:
+            self._terminate_proc(proc)
             with self._procs_lock:
                 if proc in self._active_procs:
                     self._active_procs.remove(proc)

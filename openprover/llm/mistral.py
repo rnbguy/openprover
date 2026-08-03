@@ -140,7 +140,6 @@ class MistralClient:
 
     def _request(self, payload: dict, timeout: int = 600,
                   conversation_id: str | None = None):
-        deadline = time.monotonic() + timeout
         url = f"{BASE_URL}/v1/conversations"
         if conversation_id:
             url = f"{url}/{conversation_id}"
@@ -152,7 +151,7 @@ class MistralClient:
                 "Authorization": f"Bearer {self._api_key}",
             },
         )
-        # Retry transient failures with exponential backoff until the request deadline.
+        # Retry transient failures indefinitely with exponential backoff
         # up to 120s: 5xx (server errors), 409 (conversation busy),
         # 429 (rate limit), and connection resets.  Other 4xx are
         # surfaced immediately.
@@ -160,22 +159,16 @@ class MistralClient:
         delays = [2, 5, 15, 30, 60, 120]  # then repeat 120s forever
         attempt = 0
         while True:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                raise RuntimeError(f"Mistral request timed out after {timeout}s")
             if attempt > 0:
-                retry_delay = delays[min(attempt - 1, len(delays) - 1)]
-                delay = min(retry_delay, remaining)
+                delay = delays[min(attempt - 1, len(delays) - 1)]
+                if self._interrupted.is_set():
+                    raise Interrupted()
                 logger.warning(
                     "mistral request failed, retrying in %ds (attempt %d)",
-                    retry_delay, attempt)
-                if self._interrupted.wait(delay):
-                    raise Interrupted()
-                remaining = deadline - time.monotonic()
-                if remaining <= 0:
-                    raise RuntimeError(f"Mistral request timed out after {timeout}s")
+                    delay, attempt)
+                time.sleep(delay)
             try:
-                return urllib.request.urlopen(req, timeout=remaining)
+                return urllib.request.urlopen(req, timeout=timeout)
             except urllib.error.HTTPError as e:
                 retryable = (500 <= e.code < 600) or e.code in RETRYABLE_CODES
                 if retryable:

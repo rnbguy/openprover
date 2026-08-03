@@ -23,6 +23,7 @@ Modes:
 ## Requirements
 
 - Python 3.10+
+- **Lean search**: internet access to the unauthenticated hosted LeanExplore API. It searches Mathlib, Batteries, Init, Lean, and Std with a 30-second timeout and no retries. The service permits 30 searches/minute/IP. Set `LEAN_EXPLORE_API_URL` to override `https://www.leanexplore.com/api/v2/search`.
 - **Claude** (default): [Claude Code](https://docs.anthropic.com/en/docs/claude-code) (`claude` command on PATH)
 - **Codex** (alternative): bundled `openai-codex==0.144.4` SDK; the public `gpt` alias maps to `gpt-5.6-sol` at high reasoning effort. It reuses existing Codex authentication automatically, and no separately installed `codex` executable is required at runtime
 - **Leanstral** (alternative): Mistral's Lean-specialized model; requires `MISTRAL_API_KEY` (get one at https://console.mistral.ai/)
@@ -42,11 +43,6 @@ git clone https://github.com/open-prover/openprover.git
 cd openprover
 python -m venv .venv && source .venv/bin/activate
 pip install -e .
-```
-
-For Lean search support (optional):
-```bash
-openprover fetch-lean-data
 ```
 
 ## Usage
@@ -103,7 +99,6 @@ openprover --theorem examples/addition.md \
 |---------|-------------|
 | `openprover <theorem.md>` | Run the prover (main command) |
 | `openprover inspect [run_dir]` | Browse prompts and outputs from a run |
-| `openprover fetch-lean-data` | Download Lean Explore search data and models |
 
 ### Options
 
@@ -231,11 +226,11 @@ When `--lean-project` is set with a tool-capable worker model, workers get acces
 |------|-------------|
 | `lean_verify(code)` | Compile Lean 4 code via `lake env lean`, returns OK or compiler errors |
 | `lean_store(code)` | Persist a verified snippet; auto-prepended to subsequent `lean_verify` calls |
-| `lean_search(query)` | Search Mathlib/Lean declarations by name or natural language query |
+| `lean_search(query)` | Search hosted Mathlib/Lean declarations by name or natural language query |
 
 Tools are provided via MCP (Claude workers) or native tool calling (vLLM/OpenRouter/GLM workers). Actions are shown in the worker tab and can be browsed with arrow keys.
 
-Codex workers reuse the Lean MCP server but expose only `lean_verify` and `lean_search`. Claude and native providers can also use `lean_store`.
+Codex workers reuse the Lean MCP server but expose only `lean_search`. Claude and native providers can also use `lean_verify` and `lean_store`.
 
 ## Output
 

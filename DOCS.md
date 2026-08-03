@@ -20,7 +20,7 @@ llm/
   hf.py         HFClient - local OpenAI-compatible servers (vLLM, serve_hf.py)
 lean/
   core.py       Lean 4 integration: parsing, assembly, verification
-  data.py       Lean Explore data management (fetch, availability checks)
+  search.py     Hosted LeanExplore search client
   mcp_server.py MCP server exposing lean_verify, lean_store, lean_search tools
   tools.py      Tool definitions for vLLM native tool calling, execute_worker_tool()
 tui/
@@ -48,7 +48,7 @@ tui/
 **Workers** (spawned on demand, parallel):
 - Receive a task description from the planner
 - Can reference repo items via `[[wikilink]]` syntax (resolved before sending)
-- When `--lean-project` is set with a tool-capable worker model, Claude and native workers have `lean_verify`, `lean_store`, and `lean_search`; Codex workers use MCP with only `lean_verify` and `lean_search`
+- When `--lean-project` is set with a tool-capable worker model, Claude and native workers have `lean_verify`, `lean_store`, and `lean_search`; Codex workers use MCP with only `lean_search`
 - Report free-form results back to the planner
 
 **Repository** (`repo/` directory):
@@ -65,7 +65,6 @@ Entry point. Parses arguments, creates a `Prover` and `TUI`, installs signal han
 Subcommands:
 - `openprover <theorem>` - main proving loop
 - `openprover inspect [run_dir]` - browse a historical run
-- `openprover fetch-lean-data` - download Lean Explore search data and models
 
 The LLM client is constructed via a factory pattern: `Prover` calls `make_llm(archive_dir)` after setting up the work directory, so the archive path is correct from the start. Separate planner and worker models are supported via `--planner-model` and `--worker-model`.
 
@@ -96,8 +95,8 @@ The `Prover` class owns the proving loop and all state.
 
 When `lean_worker_tools` is enabled, sets up tool calling for workers:
 - **Claude CLI workers**: Configures an MCP server (`lean/mcp_server.py`) with `lean_verify`, `lean_store`, and `lean_search` tools
-- **Codex workers**: Reuse `mcp_servers.lean_tools`, require that server, and enable only `lean_verify` and `lean_search`
-- **Other backends**: Initializes LeanExplore search service in-process and uses native OpenAI tool calling
+- **Codex workers**: Reuse `mcp_servers.lean_tools`, require that server, and enable only `lean_search`
+- **Other backends**: Use native OpenAI tool calling backed by the hosted LeanExplore API
 
 **Step flow** (`run` -> `_do_step`):
 
@@ -192,7 +191,7 @@ Archiving: Every call saved to `archive/calls/call_NNN.json` with full prompt, s
 - Typed adapter for the pinned `openai-codex==0.144.4` SDK. The public `gpt` alias maps to `gpt-5.6-sol` at high reasoning effort.
 - The SDK owns the bundled runtime, stdio transport, initialization, and model catalog. Its default client name is `codex_python_sdk`, and it reuses existing Codex authentication automatically.
 - Starts ephemeral, read-only, deny-all threads with the system prompt as developer instructions; streams text and reasoning, and interrupts active turns when OpenProver is interrupted.
-- Maps `web_search=True` to live web search. For Lean workers, passes `mcp_servers.lean_tools` only when web search is disabled and exposes `lean_verify` and `lean_search`, not `lean_store`.
+- Maps `web_search=True` to live web search. For Lean workers, passes `mcp_servers.lean_tools` only when web search is disabled and exposes only `lean_search`.
 - Accepts `max_tokens` for the shared interface but intentionally ignores it because the 0.144.4 turn API has no max-output argument. Raw usage keys are `input_tokens`, `cached_input_tokens`, `output_tokens`, `reasoning_output_tokens`, and `total_tokens`.
 
 **`MistralClient`** (`mistral.py`):
@@ -242,7 +241,7 @@ ACTIONS = [
 
 **System prompts:**
 - `planner_system_prompt(...)`: Built dynamically. Instructs the planner to coordinate proof search, maintain whiteboard, manage repo, delegate to workers. Actions and principles are assembled based on mode (`prove`/`prove_and_formalize`/`formalize_only`), isolation setting, and Lean availability.
-- `worker_system_prompt(lean_worker_tools=False)`: Instructs worker to complete its task rigorously. When `lean_worker_tools=True`, documents `lean_verify`, `lean_store`, and `lean_search` tools. If verifying, be skeptical and end with `VERDICT: CORRECT` or `VERDICT: INCORRECT`.
+- `worker_system_prompt(lean_worker_tools=False)`: Instructs worker to complete its task rigorously. Codex workers get only hosted `lean_search`; Claude workers get `lean_verify` + `lean_search` (and `lean_store` when available); native workers get `lean_verify` + `lean_store` + `lean_search`. If verifying, be skeptical and end with `VERDICT: CORRECT` or `VERDICT: INCORRECT`.
 - `SEARCH_SYSTEM_PROMPT`: Instructs literature search worker.
 
 **Prompt formatters:**
@@ -277,7 +276,7 @@ MCP server exposing `lean_verify`, `lean_store`, and `lean_search` tools for Cla
 
 - **`lean_verify(code)`**: Writes code to a temp file in the Lean work directory, runs `run_lean_check()`, returns "OK - no errors" or compiler output. If a persistent store exists, its contents are automatically prepended.
 - **`lean_store(code)`**: Verifies the snippet, then appends it to the worker's persistent prefix. Stored code is auto-prepended to all subsequent `lean_verify` calls for that worker. Rejects code with `sorry`, `axiom`, `unsafe`, `set_option`, or `native_decide`. Imports are automatically deduplicated.
-- **`lean_search(query)`**: Searches Lean 4 declarations using LeanExplore. Returns matching names, signatures, and docstrings.
+- **`lean_search(query)`**: Searches Lean 4 declarations through hosted LeanExplore. Returns matching names, signatures, and docstrings.
 
 Environment variables `LEAN_PROJECT_DIR` and `LEAN_WORK_DIR` are set by the prover when spawning the MCP server.
 
@@ -285,32 +284,15 @@ Environment variables `LEAN_PROJECT_DIR` and `LEAN_WORK_DIR` are set by the prov
 
 Tool definitions in OpenAI function-calling format for non-Claude backends. Defines `WORKER_TOOLS` (list of tool specs for `lean_verify`, `lean_store`, `lean_search`) and `execute_worker_tool()` which dispatches tool calls and manages per-worker persistent stores.
 
-### `lean/data.py`
+### `lean/search.py`
 
-Manages LeanExplore search data and dependencies.
+Stateless synchronous hosted LeanExplore client shared by MCP, native tools, and `scripts/lean_search.py`.
 
-- `is_lean_data_available()`: Checks for lean-explore package, torch, sentence-transformers, and fetched data files
-- `fetch_lean_data()`: Installs missing dependencies (lean-explore, torch CPU, sentence-transformers), fetches search data via `lean-explore data fetch`, and pre-downloads the embedding model
+- Uses the unauthenticated `https://www.leanexplore.com/api/v2/search` endpoint for Mathlib, Batteries, Init, Lean, and Std
+- Requires internet access, sends one request with a 30-second timeout, and does not retry failures
+- Reads `LEAN_EXPLORE_API_URL` at call time to override the endpoint
+- Hosted API limit: 30 searches/minute/IP
 
-Called automatically on startup when `--lean-worker-tools` is enabled and data is missing. Also available as `openprover fetch-lean-data`.
-
-### Lean Explore search pipeline
-
-The `lean_search` tool searches ~400k Lean 4 declarations (Init, Batteries, Lean, Mathlib, Std) using a multi-stage pipeline:
-
-1. **BM25 retrieval** (~0.01s): Keyword search over LLM-generated natural language descriptions ("informalizations") of each declaration. Two indices with different tokenization strategies, results merged.
-
-2. **Semantic retrieval** (~1s): Encodes query with Qwen3-Embedding-0.6B (sentence-transformer, 1024-dim), searches pre-built FAISS index for nearest neighbors by cosine similarity.
-
-3. **Score fusion**: Normalizes both score sets to [0,1], combines as `0.3 * bm25 + 0.7 * semantic`, applies dependency boost for related declarations.
-
-4. **Reranking** (GPU only, ~1-2s; skipped on CPU): Cross-encoder scoring with Qwen3-Reranker-0.6B. Disabled on CPU where it takes ~50s per query.
-
-5. **Hydration**: Looks up full metadata (signature, docstring, source) from SQLite.
-
-First call takes ~10s (model loading from disk). Subsequent calls ~1s.
-
-Data is fetched once via `openprover fetch-lean-data` or automatically on first use. Stored in `~/.lean_explore/cache/`.
 
 ### `tui/`
 

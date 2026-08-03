@@ -171,7 +171,6 @@ def test_multi_turn_retry_keeps_completed_response_accounting(monkeypatch, has_p
     prover._stream_cb = lambda *_args, **_kwargs: None
     prover.lean_work_dir = None
     prover.lean_project_dir = None
-    prover.lean_explore_service = None
     monkeypatch.setattr(prover, "_check_error_policy", lambda error: "retry", raising=False)
     monkeypatch.setattr(prover_module, "execute_worker_tool", lambda *_args: ("ok", "ok"))
 

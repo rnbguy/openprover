@@ -166,7 +166,6 @@ def test_multi_turn_worker_sums_three_responses_once(monkeypatch):
     prover._stream_cb = lambda *_args, **_kwargs: None
     prover.lean_work_dir = None
     prover.lean_project_dir = None
-    prover.lean_explore_service = None
     monkeypatch.setattr(prover_module, "execute_worker_tool", lambda *_args: ("ok", "ok"))
 
     result = prover._run_worker_multi_turn("prompt", "system", "worker", None)

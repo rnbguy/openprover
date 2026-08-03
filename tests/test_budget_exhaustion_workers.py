@@ -55,7 +55,7 @@ def make_prover(tmp_path, budget, llm):
     prover.worker_llm = llm
     prover.step_num = 1
     prover._stream_cb = lambda *_args, **_kwargs: None
-    prover.lean_work_dir = prover.lean_project_dir = prover.lean_explore_service = None
+    prover.lean_work_dir = prover.lean_project_dir = None
     return prover
 
 

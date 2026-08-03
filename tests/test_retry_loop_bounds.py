@@ -136,7 +136,6 @@ def test_multi_turn_retry_preserves_prior_response_and_stops_at_bound():
     prover._stream_cb = lambda *_args, **_kwargs: None
     prover.lean_work_dir = None
     prover.lean_project_dir = None
-    prover.lean_explore_service = None
     policy_calls = retry_policy(prover)
 
     result = prover._run_worker_multi_turn("prompt", "system", "worker", None)

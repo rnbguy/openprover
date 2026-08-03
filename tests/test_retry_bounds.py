@@ -57,7 +57,6 @@ def worker(responses):
     prover._stream_cb = lambda *_args, **_kwargs: None
     prover.lean_work_dir = None
     prover.lean_project_dir = None
-    prover.lean_explore_service = None
     return prover
 
 

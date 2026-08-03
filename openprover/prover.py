@@ -1786,8 +1786,29 @@ class Prover:
         self.tui.step_entries[self._step_idx]["verdicts"] = verdicts
         self.tui._sync_step_log_line(self._step_idx)
 
-        # Save step metadata with worker details
-        status = "interrupted" if any_interrupted else "ok"
+        # Save step metadata with worker details. Interruptions take precedence
+        # over budget exhaustion, which takes precedence over ordinary errors.
+        responses = [w for w in worker_resps if w]
+        responses.extend(verifier_resps.values())
+        ordinary_errors = [
+            w["error"] for w in responses
+            if w.get("error") not in ("", "interrupted", "budget_exhausted")
+        ]
+        has_budget_error = any(
+            w.get("error") == "budget_exhausted" for w in responses
+        )
+        if any_interrupted:
+            status = "interrupted"
+        elif has_budget_error:
+            status = "budget_exhausted"
+        elif ordinary_errors:
+            status = "error"
+        else:
+            status = "ok"
+        if status == "error":
+            self._llm_error_exit = True
+            if not getattr(self, "_last_error_msg", ""):
+                self._last_error_msg = ordinary_errors[0]
         self._save_step_meta(
             step_dir, status=status, action="spawn", resp=planner_resp,
             workers=[

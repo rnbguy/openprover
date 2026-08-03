@@ -7,6 +7,11 @@ import shutil
 import subprocess
 from pathlib import Path
 
+from .axioms import (
+    run_final_lean_axiom_check as run_final_lean_axiom_check,
+    run_lean_axiom_check as run_lean_axiom_check,
+)
+
 logger = logging.getLogger("openprover.lean")
 
 # Matches Lean 4 diagnostic lines like "6:8: error ..." (after file path stripping)

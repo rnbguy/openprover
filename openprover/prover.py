@@ -2717,6 +2717,9 @@ class Prover:
     def _retry_action(self, error: Exception, consecutive_errors: int) -> str:
         """Stop before consulting retry policy after consecutive model failures."""
         if consecutive_errors >= MAX_CONSECUTIVE_ERRORS:
+            self._llm_error_exit = True
+            if not getattr(self, "_last_error_msg", ""):
+                self._last_error_msg = str(error)
             return "stop"
         return self._check_error_policy(error)
 

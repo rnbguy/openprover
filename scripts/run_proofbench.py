@@ -3,10 +3,14 @@
 
 import argparse
 import csv
+import os
+import signal
 import subprocess
 import sys
 import tempfile
 from pathlib import Path
+
+from openprover.budget import parse_duration
 
 PROOFBENCH_CSV = Path(__file__).resolve().parent.parent / "examples" / "proofbench.csv"
 
@@ -17,6 +21,16 @@ def load_problems(csv_path: Path) -> dict[str, dict]:
         for row in csv.DictReader(f):
             problems[row["Problem ID"]] = row
     return problems
+
+
+def _terminate_proc(proc: subprocess.Popen) -> None:
+    if proc.poll() is not None:
+        return
+    try:
+        os.killpg(proc.pid, signal.SIGKILL)
+    except OSError:
+        proc.kill()
+    proc.wait()
 
 
 def main():
@@ -64,10 +78,21 @@ def main():
     if args.verbose:
         cmd.append("--verbose")
 
+    def handle_sigterm(signum, _frame):
+        raise SystemExit(128 + signum)
+
+    previous_sigterm = signal.signal(signal.SIGTERM, handle_sigterm)
     try:
-        subprocess.run(cmd)
+        proc = subprocess.Popen(cmd, start_new_session=True)
+        try:
+            proc.communicate(timeout=parse_duration(args.max_time) + 120)
+        finally:
+            _terminate_proc(proc)
+        if proc.returncode != 0:
+            sys.exit(proc.returncode)
     finally:
         Path(theorem_path).unlink(missing_ok=True)
+        signal.signal(signal.SIGTERM, previous_sigterm)
 
 
 if __name__ == "__main__":

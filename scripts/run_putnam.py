@@ -3,15 +3,25 @@
 
 import argparse
 import json
+import os
+import signal
 import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
+from openprover.budget import parse_duration
 from openprover.cli import positive_int
+
+
+_active_procs: list[subprocess.Popen] = []
+_procs_lock = threading.Lock()
+_launch_lock = threading.Lock()
+_stop_launches = threading.Event()
 
 
 def _check_tool(name: str) -> None:
@@ -29,6 +39,23 @@ def _format_time(seconds: float) -> str:
         return f"{seconds:.0f}s"
     m, s = divmod(int(seconds), 60)
     return f"{m}m{s:02d}s"
+
+
+def _terminate_proc(proc: subprocess.Popen) -> None:
+    if proc.poll() is not None:
+        return
+    try:
+        os.killpg(proc.pid, signal.SIGKILL)
+    except OSError:
+        proc.kill()
+    proc.wait()
+
+
+def _terminate_active_procs() -> None:
+    with _procs_lock:
+        procs = list(_active_procs)
+    for proc in procs:
+        _terminate_proc(proc)
 
 
 def _run_problem(problem_name: str, statement: str, lean_dir: Path,
@@ -67,15 +94,33 @@ def _run_problem(problem_name: str, statement: str, lean_dir: Path,
     else:
         cmd.append("--no-isolation")
     start = time.monotonic()
+    hard_timeout = parse_duration(args.max_time) + 120
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True)
+        with _launch_lock:
+            if _stop_launches.is_set():
+                return (problem_name, "error", 0.0, "interrupted")
+            proc = subprocess.Popen(
+                cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                start_new_session=True,
+            )
+            with _procs_lock:
+                _active_procs.append(proc)
+        try:
+            stdout, stderr = proc.communicate(timeout=hard_timeout)
+        except subprocess.TimeoutExpired:
+            elapsed = time.monotonic() - start
+            return (problem_name, "error", elapsed, f"hard timeout ({hard_timeout:.0f}s)")
+        finally:
+            _terminate_proc(proc)
+            with _procs_lock:
+                _active_procs.remove(proc)
         elapsed = time.monotonic() - start
-        if result.returncode != 0:
-            lines = result.stderr.strip().splitlines()[-3:] if result.stderr else ["unknown error"]
+        if proc.returncode != 0:
+            lines = stderr.strip().splitlines()[-3:] if stderr else ["unknown error"]
             return (problem_name, "error", elapsed, "\n".join(lines))
-        if "[result] proved" in result.stdout:
+        if "[result] proved" in stdout:
             return (problem_name, "proved", elapsed, "")
-        for line in result.stdout.splitlines():
+        for line in stdout.splitlines():
             if line.startswith("[result] error"):
                 err = line[len("[result] error"):].lstrip(": ").strip() or "openprover exited with LLM errors"
                 return (problem_name, "error", elapsed, err)
@@ -103,7 +148,10 @@ def _run_parallel(problems: dict[str, str], lean_dir: Path,
     print(f"  Putnam Bench: {total} problems, parallelism={args.parallelism},"
           f" model={model_label}\n")
 
-    with ThreadPoolExecutor(max_workers=args.parallelism) as pool:
+    _stop_launches.clear()
+    pool = ThreadPoolExecutor(max_workers=args.parallelism)
+    futures = {}
+    try:
         futures = {
             pool.submit(_run_problem, name, stmt, lean_dir, args): name
             for name, stmt in problems.items()
@@ -137,6 +185,16 @@ def _run_parallel(problems: dict[str, str], lean_dir: Path,
             if error:
                 for line in error.strip().splitlines():
                     print(f"           {line}", file=sys.stderr)
+    except BaseException:
+        with _launch_lock:
+            _stop_launches.set()
+        for future in futures:
+            future.cancel()
+        _terminate_active_procs()
+        pool.shutdown(wait=True, cancel_futures=True)
+        raise
+    else:
+        pool.shutdown(wait=True)
 
     print(f"\n  Results: {proved} proved, {not_proved} not proved,"
           f" {errors} errors (of {total})")
@@ -212,54 +270,71 @@ def main():
     if args.limit is not None:
         problems = dict(list(problems.items())[:args.limit])
 
-    if args.parallelism > 1:
-        _run_parallel(problems, lean_dir, args)
-        return
+    def handle_sigterm(signum, _frame):
+        raise SystemExit(128 + signum)
 
-    for problem_name, statement in problems.items():
-        print(f"=== Running openprover on {problem_name} ===")
+    previous_sigterm = signal.signal(signal.SIGTERM, handle_sigterm)
+    try:
+        if args.parallelism > 1:
+            _run_parallel(problems, lean_dir, args)
+            return
 
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".md", delete=False) as f:
-            f.write(f"{statement}\n")
-            theorem_path = f.name
+        exit_status = 0
+        for problem_name, statement in problems.items():
+            print(f"=== Running openprover on {problem_name} ===")
 
-        cmd = ["openprover", "--theorem", theorem_path,
-               "--model", args.model,
-               "--max-time", args.max_time,
-               "-P", str(args.max_workers)]
+            with tempfile.NamedTemporaryFile(mode="w", suffix=".md", delete=False) as f:
+                f.write(f"{statement}\n")
+                theorem_path = f.name
 
-        if args.planner_model:
-            cmd.extend(["--planner-model", args.planner_model])
-        if args.worker_model:
-            cmd.extend(["--worker-model", args.worker_model])
+            cmd = ["openprover", "--theorem", theorem_path,
+                   "--model", args.model,
+                   "--max-time", args.max_time,
+                   "-P", str(args.max_workers)]
 
-        if not args.informal:
-            lean_theorem_path = lean_dir / "src" / f"{problem_name}.lean"
-            if lean_theorem_path.is_file():
-                cmd.extend(["--lean-project", str(lean_dir)])
-                cmd.extend(["--lean-theorem", str(lean_theorem_path)])
+            if args.planner_model:
+                cmd.extend(["--planner-model", args.planner_model])
+            if args.worker_model:
+                cmd.extend(["--worker-model", args.worker_model])
+
+            if not args.informal:
+                lean_theorem_path = lean_dir / "src" / f"{problem_name}.lean"
+                if lean_theorem_path.is_file():
+                    cmd.extend(["--lean-project", str(lean_dir)])
+                    cmd.extend(["--lean-theorem", str(lean_theorem_path)])
+                else:
+                    print(f"Warning: Lean theorem not found at {lean_theorem_path}."
+                          " Running without formal verification.", file=sys.stderr)
+
+            hf_models: set[str] = set()
+            used_models = {args.model, args.planner_model, args.worker_model} - {None}
+            if used_models & hf_models:
+                cmd.extend(["--provider-url", args.provider_url])
+            if args.autonomous:
+                cmd.append("--autonomous")
+            if args.isolation:
+                cmd.append("--isolation")
             else:
-                print(f"Warning: Lean theorem not found at {lean_theorem_path}."
-                      " Running without formal verification.", file=sys.stderr)
+                cmd.append("--no-isolation")
+            if args.verbose:
+                cmd.append("--verbose")
 
-        hf_models: set[str] = set()
-        used_models = {args.model, args.planner_model, args.worker_model} - {None}
-        if used_models & hf_models:
-            cmd.extend(["--provider-url", args.provider_url])
-        if args.autonomous:
-            cmd.append("--autonomous")
-        if args.isolation:
-            cmd.append("--isolation")
-        else:
-            cmd.append("--no-isolation")
-        if args.verbose:
-            cmd.append("--verbose")
+            try:
+                proc = subprocess.Popen(cmd, start_new_session=True)
+                try:
+                    proc.communicate(timeout=parse_duration(args.max_time) + 120)
+                finally:
+                    _terminate_proc(proc)
+                if proc.returncode != 0 and exit_status == 0:
+                    exit_status = proc.returncode
+            finally:
+                Path(theorem_path).unlink(missing_ok=True)
+                print()
 
-        try:
-            subprocess.run(cmd)
-        finally:
-            Path(theorem_path).unlink(missing_ok=True)
-            print()
+        if exit_status != 0:
+            sys.exit(exit_status)
+    finally:
+        signal.signal(signal.SIGTERM, previous_sigterm)
 
 
 if __name__ == "__main__":

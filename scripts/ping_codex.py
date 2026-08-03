@@ -1,10 +1,8 @@
 #!/usr/bin/env python3
-"""Test Codex app-server client via a smoke/debug harness."""
+"""Test the Codex SDK adapter via a smoke/debug harness."""
 
 import argparse
 import json
-import os
-import subprocess
 import sys
 import tempfile
 import threading
@@ -12,12 +10,12 @@ import time
 from pathlib import Path
 
 try:
-    from openprover.llm.codex import CodexClient, Interrupted
+    from openprover.llm.codex import CodexClient, Interrupted, MODEL
 except ModuleNotFoundError:
     repo_root = Path(__file__).resolve().parents[1]
     if str(repo_root) not in sys.path:
         sys.path.insert(0, str(repo_root))
-    from openprover.llm.codex import CodexClient, Interrupted
+    from openprover.llm.codex import CodexClient, Interrupted, MODEL
 
 
 def _tool_summary(tool: str, args: dict) -> str:
@@ -75,18 +73,12 @@ def _build_mcp_config(lean_project: str) -> dict:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Test CodexClient app-server")
-    parser.add_argument(
-        "--model",
-        default="gpt-5.4",
-        help="Model name (default: gpt-5.4)",
-    )
+    parser = argparse.ArgumentParser(description="Test the Codex SDK adapter")
     parser.add_argument(
         "--prompt",
         default="What is the fundamental theorem of algebra? State it precisely.",
         help="Prompt to send",
     )
-    parser.add_argument("--max-tokens", type=int, default=512)
     parser.add_argument(
         "--print-reasoning",
         action=argparse.BooleanOptionalAction,
@@ -113,43 +105,11 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _check_codex_login() -> tuple[bool, str]:
-    # Workaround: app-server startup can block before surfacing auth errors.
-    try:
-        proc = subprocess.run(
-            ["codex", "login", "status"],
-            capture_output=True,
-            text=True,
-            timeout=5,
-            check=False,
-        )
-    except FileNotFoundError:
-        return (
-            False,
-            "codex CLI not found on PATH; install Codex and run `codex login`.",
-        )
-    except subprocess.TimeoutExpired:
-        return False, "codex login status timed out; run `codex login` and retry."
-
-    if proc.returncode == 0:
-        return True, ""
-
-    detail = (proc.stderr or proc.stdout or "").strip().split("\n", 1)[0]
-    if detail:
-        return False, f"codex auth not ready ({detail}); run `codex login`."
-    return False, "codex auth not ready; run `codex login`."
-
-
 def main(argv=None):
     args = build_parser().parse_args(argv)
 
-    ok, msg = _check_codex_login()
-    if not ok:
-        print(f"ERROR: {msg}", file=sys.stderr)
-        return 1
-
     archive_dir = Path(tempfile.mkdtemp(prefix="ping-codex-archive-"))
-    client = CodexClient(args.model, archive_dir, max_output_tokens=args.max_tokens)
+    client = CodexClient(MODEL, archive_dir)
     if args.lean_project:
         client.mcp_config = _build_mcp_config(args.lean_project)
 
@@ -194,7 +154,6 @@ def main(argv=None):
             stream_callback=on_stream,
             tool_start_callback=_print_tool_start,
             tool_callback=_print_tool_done,
-            max_tokens=args.max_tokens,
         )
     except Interrupted:
         if saw_reasoning:
@@ -226,9 +185,11 @@ def main(argv=None):
     print("-" * 60)
     print(f"Finish reason: {finish_reason}")
     print(f"Duration (ms): {duration_ms}")
-    print(f"Prompt tokens:     {usage.get('prompt_tokens', '?')}")
-    print(f"Completion tokens: {usage.get('completion_tokens', '?')}")
-    print(f"Total tokens:      {usage.get('total_tokens', '?')}")
+    print(f"input_tokens: {usage.get('input_tokens', '?')}")
+    print(f"cached_input_tokens: {usage.get('cached_input_tokens', '?')}")
+    print(f"output_tokens: {usage.get('output_tokens', '?')}")
+    print(f"reasoning_output_tokens: {usage.get('reasoning_output_tokens', '?')}")
+    print(f"total_tokens: {usage.get('total_tokens', '?')}")
     if args.debug_events:
         print(
             "Raw keys:",

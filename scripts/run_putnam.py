@@ -29,8 +29,6 @@ def _check_tool(name: str) -> None:
         print(f"Error: '{name}' not found on PATH.", file=sys.stderr)
         if name == "claude":
             print(f"Install it first: https://docs.anthropic.com/en/docs/claude-cli", file=sys.stderr)
-        elif name == "codex":
-            print("Install Codex CLI so 'codex' is available on PATH.", file=sys.stderr)
         sys.exit(1)
 
 
@@ -258,8 +256,6 @@ def main():
     all_models = {args.model, args.planner_model, args.worker_model} - {None}
     if all_models & {"sonnet", "opus"}:
         _check_tool("claude")
-    if all_models & {"gpt"}:
-        _check_tool("codex")
 
     if args.problem:
         if args.problem not in problems:

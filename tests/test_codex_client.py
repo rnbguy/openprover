@@ -1,8 +1,6 @@
 import inspect
 import json
 import os
-import stat
-from pathlib import Path
 from threading import Event, Thread
 
 import pytest
@@ -284,34 +282,38 @@ def test_hard_interrupts_every_concurrent_active_turn(monkeypatch: pytest.Monkey
     assert outcomes[0].response["raw"]["usage"]["output_tokens"] == 7
 
 
-def test_sdk_home_copies_only_auth_and_preserves_ambient_environment(
+def test_sdk_config_inherits_ambient_codex_environment(
     monkeypatch: pytest.MonkeyPatch, tmp_path
 ):
     source_home = tmp_path / "source-codex"
     source_home.mkdir()
-    source_auth = source_home / "auth.json"
-    source_auth.write_text('{"token":"secret"}')
-    source_auth.chmod(0o644)
-    (source_home / "config.toml").write_text("untrusted = true\n")
+    auth = source_home / "auth.json"
+    config_file = source_home / "config.toml"
+    auth.write_text('{"token":"secret"}')
+    config_file.write_text("untrusted = true\n")
+    original_auth = auth.read_bytes()
+    original_config = config_file.read_bytes()
     monkeypatch.setenv("CODEX_HOME", str(source_home))
     codex, fake = client(monkeypatch, tmp_path, [FakeTurn("turn-1", result())])
 
+    # Given: a valid ambient Codex home with user configuration.
+    # When: the Codex client starts a turn.
     codex.call("prompt", "system")
 
+    # Then: the SDK inherits the ambient environment and OpenProver keeps its
+    # restrictive feature overrides authoritative.
     config = fake.configs[0]
-    assert config.env is not None
-    isolated_home = Path(config.env["CODEX_HOME"])
-    assert config.env == {"CODEX_HOME": str(isolated_home)}
-    assert config.cwd == str(isolated_home)
+    assert config.env is None
+    assert config.cwd is None
     assert os.environ["CODEX_HOME"] == str(source_home)
-    assert isolated_home != source_home
-    assert stat.S_IMODE(isolated_home.stat().st_mode) == 0o700
-    assert (isolated_home / "auth.json").read_text() == source_auth.read_text()
-    assert stat.S_IMODE((isolated_home / "auth.json").stat().st_mode) == 0o600
-    assert not (isolated_home / "config.toml").exists()
-
-    codex.cleanup()
-    assert not isolated_home.exists()
+    assert auth.read_bytes() == original_auth
+    assert config_file.read_bytes() == original_config
+    assert fake.configs[0].config_overrides == (
+        "features.shell_tool=false",
+        "features.multi_agent=false",
+        "features.plugins=false",
+        "features.apps=false",
+    )
 
 
 def test_cleanup_closes_started_sdk_once(monkeypatch: pytest.MonkeyPatch, tmp_path):

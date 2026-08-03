@@ -1,8 +1,5 @@
 """Typed adapter for the local Codex SDK."""
 
-import os
-import shutil
-import tempfile
 import threading
 from pathlib import Path
 from typing import Final
@@ -61,7 +58,6 @@ class CodexClient:
         self.total_cost = 0.0
         self.mcp_config: JsonObject | None = None
         self._codex: Codex | None = None
-        self._codex_home = None
         self._sdk_lock = threading.RLock()
         self._turn_lock = threading.Lock()
         self._interrupted = threading.Event()
@@ -83,15 +79,9 @@ class CodexClient:
         """Close the lazily created SDK runtime once."""
         with self._sdk_lock:
             codex = self._codex
-            codex_home = self._codex_home
             self._codex = None
-            self._codex_home = None
-        try:
-            if codex is not None:
-                codex.close()
-        finally:
-            if codex_home is not None:
-                codex_home.cleanup()
+        if codex is not None:
+            codex.close()
 
     def clear_interrupt(self) -> None:
         """Allow subsequent calls after a hard interrupt."""
@@ -220,34 +210,17 @@ class CodexClient:
         with self._sdk_lock:
             if self._codex is not None:
                 return self._codex
-            source_home = Path(os.environ.get("CODEX_HOME", Path.home() / ".codex"))
-            source_auth = source_home / "auth.json"
-            codex_home = tempfile.TemporaryDirectory()
             codex: Codex | None = None
             ready = False
             try:
-                Path(codex_home.name).chmod(0o700)
-                if source_auth.is_file():
-                    isolated_auth = Path(codex_home.name) / "auth.json"
-                    shutil.copyfile(source_auth, isolated_auth)
-                    isolated_auth.chmod(0o600)
-                codex = Codex(
-                    CodexConfig(
-                        config_overrides=_CONFIG_OVERRIDES,
-                        cwd=codex_home.name,
-                        env={"CODEX_HOME": codex_home.name},
-                    )
-                )
+                codex = Codex(CodexConfig(config_overrides=_CONFIG_OVERRIDES))
                 self._validate_model(codex)
                 self._codex = codex
-                self._codex_home = codex_home
                 ready = True
                 return codex
             finally:
-                if not ready:
-                    if codex is not None:
-                        codex.close()
-                    codex_home.cleanup()
+                if not ready and codex is not None:
+                    codex.close()
 
     def _validate_model(self, codex: Codex) -> None:
         model = next((entry for entry in codex.models().data if entry.model == self.model), None)

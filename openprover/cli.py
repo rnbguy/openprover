@@ -21,6 +21,14 @@ SUBCOMMANDS = {"inspect", "fetch-lean-data"}
 RUN_CONFIG_FILE = "run_config.toml"
 
 
+def positive_int(value: str) -> int:
+    """Parse a strictly positive integer for argparse options."""
+    number = int(value)
+    if number < 1:
+        raise argparse.ArgumentTypeError(f"invalid positive integer value: {value}")
+    return number
+
+
 def _cli_flag_given(*flags: str) -> bool:
     """Check if any of the given CLI flags were explicitly passed by the user."""
     return any(f in sys.argv for f in flags)
@@ -248,7 +256,7 @@ def _cmd_prove():
     parser.add_argument("--autonomous", action="store_true", help="Start in autonomous mode (default: interactive)")
     parser.add_argument("--read-only", action="store_true", help="Inspect run without resuming")
     parser.add_argument("--isolation", action=argparse.BooleanOptionalAction, default=True, help="Disable web searches (no literature_search action)")
-    parser.add_argument("-P", "--max-workers", type=int, default=1, help="Max parallel workers per spawn step (default: 1)")
+    parser.add_argument("-P", "--max-workers", type=positive_int, default=1, help="Max parallel workers per spawn step (default: 1)")
     parser.add_argument("--verifier", action=argparse.BooleanOptionalAction, default=True,
                         help="Run LLM verifier after each worker (default: enabled)")
     parser.add_argument("--answer-reserve", type=int, default=4096, metavar="TOKENS", help="Tokens reserved for answer after thinking (default: 4096)")
@@ -424,7 +432,10 @@ def _cmd_prove():
             if not _cli_flag_given("--conclude-after"):
                 args.conclude_after = saved.get("conclude_after", args.conclude_after)
             if not _cli_flag_given("-P", "--max-workers"):
-                args.max_workers = saved.get("max_workers", args.max_workers)
+                saved_max_workers = saved.get("max_workers", args.max_workers)
+                if type(saved_max_workers) is not int or saved_max_workers < 1:
+                    parser.error("saved max_workers must be a positive integer")
+                args.max_workers = saved_max_workers
             if not _cli_flag_given("--isolation", "--no-isolation"):
                 args.isolation = saved.get("isolation", args.isolation)
             if not _cli_flag_given("--autonomous"):

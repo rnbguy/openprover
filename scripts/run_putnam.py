@@ -11,6 +11,8 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
+from openprover.cli import positive_int
+
 
 def _check_tool(name: str) -> None:
     if shutil.which(name) is None:
@@ -146,9 +148,9 @@ def main():
                         help="Path to cloned PutnamBench repository (default: ./PutnamBench)")
     parser.add_argument("--problem", help="Specific problem name to run (e.g., putnam_1962_a1)")
     parser.add_argument("--limit", type=int, help="Limit number of problems to run")
-    parser.add_argument("--parallelism", type=int, default=1,
+    parser.add_argument("--parallelism", type=positive_int, default=1,
                         help="Concurrent openprover instances (default: 1)")
-    parser.add_argument("-P", "--max-workers", type=int, default=1,
+    parser.add_argument("-P", "--max-workers", type=positive_int, default=1,
                         help="Max parallel workers per spawn step inside "
                              "openprover (default: 1).")
     model_choices = ["sonnet", "opus", "gpt", "minimax-m2.5", "leanstral"]

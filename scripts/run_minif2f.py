@@ -14,6 +14,8 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
 
+from openprover.cli import positive_int
+
 VALID_URL = "https://raw.githubusercontent.com/google-deepmind/miniF2F/refs/heads/main/MiniF2F/Valid.lean"
 TEST_URL = "https://raw.githubusercontent.com/google-deepmind/miniF2F/refs/heads/main/MiniF2F/Test.lean"
 
@@ -403,9 +405,9 @@ def main():
                         help="Limit number of problems")
     parser.add_argument("--skip", type=int, default=0,
                         help="Skip first N problems (resume interrupted runs)")
-    parser.add_argument("--parallelism", type=int, default=1,
+    parser.add_argument("--parallelism", type=positive_int, default=1,
                         help="Concurrent problem instances (default: 1)")
-    parser.add_argument("-P", "--max-workers", type=int, default=1,
+    parser.add_argument("-P", "--max-workers", type=positive_int, default=1,
                         help="Max parallel workers per openprover step "
                              "(default: 1). Only used with --method openprover.")
 

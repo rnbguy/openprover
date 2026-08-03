@@ -13,6 +13,8 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
 
+from openprover.cli import positive_int
+
 CLAUDE_MODELS = {"sonnet", "opus"}
 RATE_LIMIT_WAIT = 600  # seconds to wait before retrying after rate limit
 
@@ -425,9 +427,9 @@ def main():
                         help="Limit number of problems")
     parser.add_argument("--skip", type=int, default=0,
                         help="Skip first N problems (resume interrupted runs)")
-    parser.add_argument("--parallelism", type=int, default=1,
+    parser.add_argument("--parallelism", type=positive_int, default=1,
                         help="Concurrent problem instances (default: 1)")
-    parser.add_argument("-P", "--max-workers", type=int, default=1,
+    parser.add_argument("-P", "--max-workers", type=positive_int, default=1,
                         help="Max parallel workers per openprover step "
                              "(default: 1). Only used with --method openprover.")
 

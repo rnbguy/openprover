@@ -540,7 +540,10 @@ class Prover:
         workers_dir = last_step_dir / "workers"
         if not workers_dir.exists():
             return
-        task_files = sorted(workers_dir.glob("task_*.md"))
+        task_files = sorted(
+            workers_dir.glob("task_*.md"),
+            key=lambda path: int(path.stem.removeprefix("task_")),
+        )
         if not task_files:
             return
 
@@ -560,36 +563,41 @@ class Prover:
         # If we couldn't parse worker metadata, fall back to respawning all
         if not interrupted_indices:
             # Check if any result files are missing or contain the interrupted marker
-            for i in range(len(task_files)):
-                result_file = workers_dir / f"result_{i}.md"
+            for task_file in task_files:
+                original_index = int(task_file.stem.removeprefix("task_"))
+                result_file = workers_dir / f"result_{original_index}.md"
                 if not result_file.exists():
-                    interrupted_indices.add(i)
+                    interrupted_indices.add(original_index)
                 else:
                     content = result_file.read_text().strip()
                     if not content or content == "(terminated by user)":
-                        interrupted_indices.add(i)
+                        interrupted_indices.add(original_index)
             # If still nothing found interrupted, respawn all as fallback
             if not interrupted_indices:
-                interrupted_indices = set(range(len(task_files)))
+                interrupted_indices = {
+                    int(task_file.stem.removeprefix("task_"))
+                    for task_file in task_files
+                }
 
         # Build tasks list for only interrupted workers; carry forward completed results
         tasks_to_respawn = []
         completed_workers = {}  # {original_index: result_text}
-        for i, f in enumerate(task_files):
-            if i in interrupted_indices:
+        for f in task_files:
+            original_index = int(f.stem.removeprefix("task_"))
+            if original_index in interrupted_indices:
                 tasks_to_respawn.append({"description": f.read_text(),
-                                         "_original_index": i})
+                                          "_original_index": original_index})
             else:
-                result_file = workers_dir / f"result_{i}.md"
+                result_file = workers_dir / f"result_{original_index}.md"
                 result = result_file.read_text() if result_file.exists() else ""
-                completed_workers[i] = {
+                completed_workers[original_index] = {
                     "description": f.read_text(),
                     "result": result,
                 }
                 # Also carry verifier results if present
-                vresult_file = workers_dir / f"verifier_result_{i}.md"
+                vresult_file = workers_dir / f"verifier_result_{original_index}.md"
                 if vresult_file.exists():
-                    completed_workers[i]["verifier_result"] = vresult_file.read_text()
+                    completed_workers[original_index]["verifier_result"] = vresult_file.read_text()
 
         if not tasks_to_respawn:
             logger.info("All workers already completed for step %d", self.step_num)
@@ -1541,20 +1549,19 @@ class Prover:
                                  resp=planner_resp, error="No tasks specified")
             return "continue"
 
-        # Limit to max_workers
-        tasks = tasks[:self.max_workers]
-
         self._workers_active = True
         self._interrupt_count = 0
+        interrupt_count = self._interrupt_count
         logger.info("Spawning %d worker(s)", len(tasks))
 
         # Create worker tabs
         worker_ids = []
         for i, task in enumerate(tasks):
-            wid = f"worker_{self.step_num}_{i}"
+            original_index = task.get("_original_index", i)
+            wid = f"worker_{self.step_num}_{original_index}"
             desc = task.get("description", "")
             task_summary = task.get("summary", "").strip()
-            label = f"Worker {i}"
+            label = f"Worker {original_index}"
             tab = self.tui.add_worker_tab(wid, label, task_description=desc)
             if tab is not None:
                 tab.task_summary = task_summary
@@ -1569,27 +1576,48 @@ class Prover:
         worker_resps = [None] * len(tasks)
         n = len(tasks)
         done_count = 0
+        for i, task in enumerate(tasks):
+            original_index = task.get("_original_index", i)
+            (workers_dir / f"task_{original_index}.md").write_text(
+                task.get("description", ""))
         if n:
             self.tui.set_waiting_status(f"waiting for {n} worker(s) (0/{n} finished)")
 
         if n:
-            with ThreadPoolExecutor(max_workers=n) as pool:
-                futures = {}
-                for i, task in enumerate(tasks):
-                    # Save task
-                    desc = task.get("description", "")
-                    (workers_dir / f"task_{i}.md").write_text(desc)
+            capacity = min(self.max_workers, len(tasks))
+            with ThreadPoolExecutor(max_workers=capacity) as pool:
+                pending = {}
+                next_task = 0
+                stop_submitting = False
+                while pending or next_task < n:
+                    if (self.shutting_down
+                            or self._interrupt_count != interrupt_count):
+                        stop_submitting = True
+                    while (next_task < n and len(pending) < capacity
+                           and not stop_submitting):
+                        if (self.shutting_down
+                                or self._interrupt_count != interrupt_count):
+                            stop_submitting = True
+                            break
+                        task = tasks[next_task]
+                        original_index = task.get("_original_index", next_task)
+                        archive = workers_dir / f"worker_{original_index}_call.md"
+                        future = pool.submit(
+                            self._run_worker, task, worker_ids[next_task], archive,
+                        )
+                        pending[future] = next_task
+                        next_task += 1
 
-                    archive = workers_dir / f"worker_{i}_call.md"
-                    future = pool.submit(self._run_worker, task, worker_ids[i], archive)
-                    futures[future] = i
+                    if not pending:
+                        break
 
-                pending = set(futures.keys())
-                while pending:
-                    done_set, pending = wait(pending, timeout=0.5,
-                                             return_when=FIRST_COMPLETED)
+                    done_set, _ = wait(pending, timeout=0.5,
+                                       return_when=FIRST_COMPLETED)
+                    if (self.shutting_down
+                            or self._interrupt_count != interrupt_count):
+                        stop_submitting = True
                     for future in done_set:
-                        idx = futures[future]
+                        idx = pending.pop(future)
                         try:
                             worker_resps[idx] = future.result()
                         except Exception as e:
@@ -1598,6 +1626,8 @@ class Prover:
                                 "duration_ms": 0, "raw": {}, "error": str(e),
                             }
                         wresp = worker_resps[idx]
+                        if wresp.get("error") == "interrupted":
+                            stop_submitting = True
                         if wresp.get("error") and wresp["error"] != "interrupted":
                             self.tui.tab_log(worker_ids[idx],
                                              f"Error: {wresp['error']}", color="red")
@@ -1608,6 +1638,18 @@ class Prover:
                             self.tui.set_waiting_status(
                                 f"waiting for {n} worker(s) ({done_count}/{n} finished)"
                             )
+                for idx in range(next_task, n):
+                    worker_resps[idx] = {
+                        "result": "(terminated by user)", "cost": 0.0,
+                        "duration_ms": 0, "raw": {}, "error": "interrupted",
+                    }
+                    done_count += 1
+                    logger.info("Worker %d/%d done", done_count, n)
+                    self.tui.mark_worker_done(worker_ids[idx])
+                    if done_count < n:
+                        self.tui.set_waiting_status(
+                            f"waiting for {n} worker(s) ({done_count}/{n} finished)"
+                        )
 
         self.tui.set_waiting_status("")
         self._workers_active = False
@@ -1698,22 +1740,26 @@ class Prover:
         else:
             # Normal path (no completed_workers to merge)
             for i, (task, wresp) in enumerate(zip(tasks, worker_resps)):
+                original_index = task.get("_original_index", i)
                 desc = task.get("description", "")
-                first_line = desc.split("\n")[0][:60] if desc else f"Worker {i}"
+                first_line = (desc.split("\n")[0][:60]
+                              if desc else f"Worker {original_index}")
                 result = wresp["result"] if wresp else ""
-                all_parts.append(f"## Worker {i}: {first_line}\n\n{result}")
-                (workers_dir / f"result_{i}.md").write_text(result or "")
+                all_parts.append(
+                    f"## Worker {original_index}: {first_line}\n\n{result}")
+                (workers_dir / f"result_{original_index}.md").write_text(
+                    result or "")
                 # Append verifier result if available
                 if i in verifier_resps:
                     v_result = verifier_resps[i].get("result", "")
                     all_parts.append(
-                        f"## Verification of Worker {i}\n\n{v_result}")
-                    (workers_dir / f"verifier_result_{i}.md").write_text(
+                        f"## Verification of Worker {original_index}\n\n{v_result}")
+                    (workers_dir / f"verifier_result_{original_index}.md").write_text(
                         v_result or "")
                 # Save tool calls log
                 tc_log = wresp.get("tool_calls_log", []) if wresp else []
                 if tc_log:
-                    (workers_dir / f"tool_calls_{i}.toml").write_text(
+                    (workers_dir / f"tool_calls_{original_index}.toml").write_text(
                         _format_tool_calls_toml(tc_log)
                     )
 
@@ -1721,6 +1767,11 @@ class Prover:
 
         # Extract and store verdicts for TUI display
         verdicts = {}
+        for original_index, worker in completed_workers.items():
+            if worker.get("verifier_result"):
+                verdict = prompts.extract_verdict(worker["verifier_result"])
+                if verdict:
+                    verdicts[original_index] = verdict
         for i, vresp in verifier_resps.items():
             verdict = prompts.extract_verdict(vresp.get("result", ""))
             if not verdict and not vresp.get("error"):
@@ -1731,7 +1782,7 @@ class Prover:
                     + "\n\n[Verifier output was incomplete — no verdict produced.]"
                 )
             if verdict:
-                verdicts[i] = verdict
+                verdicts[tasks[i].get("_original_index", i)] = verdict
         self.tui.step_entries[self._step_idx]["verdicts"] = verdicts
         self.tui._sync_step_log_line(self._step_idx)
 
@@ -1739,7 +1790,10 @@ class Prover:
         status = "interrupted" if any_interrupted else "ok"
         self._save_step_meta(
             step_dir, status=status, action="spawn", resp=planner_resp,
-            workers=[w for w in worker_resps if w],
+            workers=[
+                dict(w, _original_index=task.get("_original_index", i))
+                for i, (task, w) in enumerate(zip(tasks, worker_resps)) if w
+            ],
         )
 
         # Store worker tab snapshots for history
@@ -2292,6 +2346,7 @@ class Prover:
     def _run_verifiers(self, tasks: list[dict], worker_resps: list[dict | None],
                        workers_dir: Path) -> dict[int, dict]:
         """Run independent verifiers for all non-interrupted workers. Returns {worker_idx: resp}."""
+        interrupt_count = getattr(self, "_interrupt_count", 0)
         non_interrupted = [
             (i, t, w) for i, (t, w) in enumerate(zip(tasks, worker_resps))
             if w and not w.get("error") and w.get("result")
@@ -2302,11 +2357,12 @@ class Prover:
 
         verifier_ids = []
         for i, task, wresp in non_interrupted:
-            vid = f"verifier_{self.step_num}_{i}"
-            label = f"Verify {i}"
+            original_index = task.get("_original_index", i)
+            vid = f"verifier_{self.step_num}_{original_index}"
+            label = f"Verify {original_index}"
             worker_out = wresp.get("result", "")
             worker_task = task.get("description", "")
-            vdesc = f"Verifying Worker {i}"
+            vdesc = f"Verifying Worker {original_index}"
             tab = self.tui.add_worker_tab(vid, label, task_description=vdesc)
             if tab is not None:
                 tab.worker_task = worker_task
@@ -2317,24 +2373,42 @@ class Prover:
         vn = len(non_interrupted)
         self.tui.set_waiting_status(f"verifying {vn} worker(s)")
 
-        with ThreadPoolExecutor(max_workers=vn) as pool:
-            vfutures: dict = {}
-            for j, (i, task, wresp) in enumerate(non_interrupted):
-                desc = task.get("description", "")
-                archive = workers_dir / f"verifier_{i}_call.md"
-                future = pool.submit(
-                    self._run_verifier, desc, wresp["result"],
-                    verifier_ids[j], archive,
-                )
-                vfutures[future] = (j, i)
+        capacity = min(self.max_workers, vn)
+        with ThreadPoolExecutor(max_workers=capacity) as pool:
+            pending = {}
+            next_verifier = 0
+            stop_submitting = False
+            while pending or next_verifier < vn:
+                if (self.shutting_down
+                        or self._interrupt_count != interrupt_count):
+                    stop_submitting = True
+                while (next_verifier < vn and len(pending) < capacity
+                       and not stop_submitting):
+                    if (self.shutting_down
+                            or self._interrupt_count != interrupt_count):
+                        stop_submitting = True
+                        break
+                    i, task, wresp = non_interrupted[next_verifier]
+                    original_index = task.get("_original_index", i)
+                    archive = workers_dir / f"verifier_{original_index}_call.md"
+                    future = pool.submit(
+                        self._run_verifier, task.get("description", ""),
+                        wresp["result"], verifier_ids[next_verifier], archive,
+                    )
+                    pending[future] = (next_verifier, i)
+                    next_verifier += 1
 
-            v_pending = set(vfutures.keys())
-            while v_pending:
-                done_set, v_pending = wait(
-                    v_pending, timeout=0.5, return_when=FIRST_COMPLETED,
+                if not pending:
+                    break
+
+                done_set, _ = wait(
+                    pending, timeout=0.5, return_when=FIRST_COMPLETED,
                 )
+                if (self.shutting_down
+                        or self._interrupt_count != interrupt_count):
+                    stop_submitting = True
                 for future in done_set:
-                    j, i = vfutures[future]
+                    j, i = pending.pop(future)
                     try:
                         verifier_resps[i] = future.result()
                     except Exception as e:
@@ -2342,7 +2416,17 @@ class Prover:
                             "result": f"Verifier error: {e}", "cost": 0.0,
                             "duration_ms": 0, "raw": {}, "error": str(e),
                         }
+                    if verifier_resps[i].get("error") == "interrupted":
+                        stop_submitting = True
                     self.tui.mark_worker_done(verifier_ids[j])
+
+            for j in range(next_verifier, vn):
+                i, _, _ = non_interrupted[j]
+                verifier_resps[i] = {
+                    "result": "(terminated by user)", "cost": 0.0,
+                    "duration_ms": 0, "raw": {}, "error": "interrupted",
+                }
+                self.tui.mark_worker_done(verifier_ids[j])
 
         self.tui.set_waiting_status("")
         return verifier_resps
@@ -2763,7 +2847,7 @@ class Prover:
             for i, w in enumerate(workers):
                 lines.append("")
                 lines.append(f"[[workers]]")
-                lines.append(f"index = {i}")
+                lines.append(f"index = {w.get('_original_index', i)}")
                 lines.append(f'cost_usd = {w.get("cost", 0.0)}')
                 lines.append(f'duration_ms = {w.get("duration_ms", 0)}')
                 tokens = self._extract_token_usage(w)
@@ -2957,7 +3041,10 @@ class Prover:
                     self.tui.clear_worker_tabs()
                 continue
 
-            task_files = sorted(workers_dir.glob("task_*.md"))
+            task_files = sorted(
+                workers_dir.glob("task_*.md"),
+                key=lambda path: int(path.stem.removeprefix("task_")),
+            )
             plan_tasks = plan.get("tasks") or []
             verdicts: dict[int, str] = {}
             for task_file in task_files:

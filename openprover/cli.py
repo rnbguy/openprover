@@ -225,16 +225,15 @@ def _resolve_inputs(parser, args):
 
 
 def _is_finished(work_dir: Path, mode: str) -> bool:
-    """Check if a run is already finished (has discussion or proof)."""
-    has_discussion = (work_dir / "DISCUSSION.md").exists()
+    """Check if a run has the proof artifacts required by its mode."""
     has_proof_md = (work_dir / "PROOF.md").exists()
     has_proof_lean = (work_dir / "PROOF.lean").exists()
     if mode == "formalize_only":
-        return has_proof_lean or has_discussion
+        return has_proof_lean
     elif mode == "prove_and_formalize":
-        return (has_proof_md and has_proof_lean) or has_discussion
+        return has_proof_md and has_proof_lean
     else:
-        return has_proof_md or has_discussion
+        return has_proof_md
 
 
 def _cmd_prove():

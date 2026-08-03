@@ -489,7 +489,18 @@ class Prover:
                 self.tui.log("Budget threshold reached - concluding.", color="yellow")
                 break
 
-        if not self.shutting_down and self.tui.step_entries:
+        has_proof_md = (self.work_dir / "PROOF.md").exists()
+        has_proof_lean = (self.work_dir / "PROOF.lean").exists()
+        mode = getattr(self, "mode", "prove")
+        if mode == "formalize_only":
+            has_proof = has_proof_lean
+        elif mode == "prove_and_formalize":
+            has_proof = has_proof_md and has_proof_lean
+        else:
+            has_proof = has_proof_md
+        if (has_proof and not self.shutting_down and self.tui.step_entries
+                and not self.budget.should_conclude()
+                and not self._spending_limit_hit and not self._llm_error_exit):
             self._write_discussion()
 
     def _push_output(self, text: str):
@@ -1541,6 +1552,8 @@ class Prover:
 
     def _handle_spawn(self, plan: dict, step_dir: Path,
                       planner_resp: dict | None = None) -> str:
+        pre_spawn_llm_error_exit = getattr(self, "_llm_error_exit", False)
+        pre_spawn_last_error_msg = getattr(self, "_last_error_msg", "")
         tasks = plan.get("tasks", [])
         completed_workers = plan.get("completed_workers", {})
         if not tasks and not completed_workers:
@@ -1655,10 +1668,24 @@ class Prover:
         self._workers_active = False
 
         # Check if any workers were interrupted
-        any_interrupted = any(
+        worker_interrupted = any(
             w and w.get("error") == "interrupted" for w in worker_resps
         )
-        if any_interrupted:
+
+        # ── Verifier phase ──
+        verifier_interrupt_count = self._interrupt_count
+        if self.verifier and not worker_interrupted:
+            verifier_resps = self._run_verifiers(tasks, worker_resps, workers_dir)
+        else:
+            verifier_resps = {}
+
+        verifier_interrupted = (
+            not self.shutting_down and self._interrupt_count != verifier_interrupt_count
+        )
+        any_interrupted = verifier_interrupted or worker_interrupted or any(
+            v.get("error") == "interrupted" for v in verifier_resps.values()
+        )
+        if any_interrupted and not self.shutting_down:
             self.planner_llm.clear_interrupt()
             self.worker_llm.clear_interrupt()
             self.tui.update_step_status(
@@ -1670,12 +1697,6 @@ class Prover:
                 self.autonomous = False
                 self.tui.autonomous = False
                 self.tui.log("Interrupted - switching to manual mode", color="yellow")
-
-        # ── Verifier phase ──
-        if self.verifier:
-            verifier_resps = self._run_verifiers(tasks, worker_resps, workers_dir)
-        else:
-            verifier_resps = {}
 
         # Build combined output: merge completed_workers (from prior run)
         # with freshly-spawned worker results.
@@ -1809,6 +1830,9 @@ class Prover:
             self._llm_error_exit = True
             if not getattr(self, "_last_error_msg", ""):
                 self._last_error_msg = ordinary_errors[0]
+        elif status in ("interrupted", "budget_exhausted"):
+            self._llm_error_exit = pre_spawn_llm_error_exit
+            self._last_error_msg = pre_spawn_last_error_msg
         self._save_step_meta(
             step_dir, status=status, action="spawn", resp=planner_resp,
             workers=[
@@ -2923,17 +2947,16 @@ class Prover:
 
     @property
     def is_finished(self) -> bool:
-        """Check if this run is already finished (has discussion or proof)."""
-        has_discussion = (self.work_dir / "DISCUSSION.md").exists()
+        """Check if this run has the proof artifacts required by its mode."""
         has_proof_md = (self.work_dir / "PROOF.md").exists()
         has_proof_lean = (self.work_dir / "PROOF.lean").exists()
 
         if self.mode == "formalize_only":
-            return has_proof_lean or has_discussion
+            return has_proof_lean
         elif self.mode == "prove_and_formalize":
-            return (has_proof_md and has_proof_lean) or has_discussion
+            return has_proof_md and has_proof_lean
         else:
-            return has_proof_md or has_discussion
+            return has_proof_md
 
     def inspect(self):
         """Enter inspect mode - browse historical run data without running steps."""

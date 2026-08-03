@@ -11,8 +11,15 @@ from openai_codex import (
     Sandbox,
     TurnResult,
 )
-from openai_codex.models import JsonObject, Notification, TurnCompletedNotification
-from openai_codex.types import ReasoningEffort, ThreadTokenUsage, TurnError, TurnStatus
+from openai_codex.models import (
+    AgentMessageDeltaNotification,
+    ItemCompletedNotification,
+    JsonObject,
+    Notification,
+    ThreadTokenUsageUpdatedNotification,
+    TurnCompletedNotification,
+)
+from openai_codex.types import ReasoningEffort, ThreadItem, ThreadTokenUsage, TurnError, TurnStatus
 
 import openprover.llm.codex as codex_module
 from openprover.llm.codex import CodexClient
@@ -64,13 +71,55 @@ class FakeTurn:
         self.started.set()
         if self.block is not None:
             self.block.wait(timeout=1)
+        if self.result.status is TurnStatus.failed:
+            if self.result.error is not None and self.result.error.message:
+                raise RuntimeError(self.result.error.message)
+            raise RuntimeError(f"turn failed with status {self.result.status.value}")
         return self.result
 
     def stream(self) -> Iterator[Notification]:
         self.started.set()
         if self.block is not None:
             self.block.wait(timeout=1)
-        yield from self.events
+        if self.events:
+            yield from self.events
+            return
+        if self.result.final_response is not None:
+            yield Notification(
+                method="item/agentMessage/delta",
+                payload=AgentMessageDeltaNotification(
+                    delta=self.result.final_response,
+                    item_id="message-1",
+                    thread_id="thread-1",
+                    turn_id=self.result.id,
+                ),
+            )
+            yield Notification(
+                method="item/completed",
+                payload=ItemCompletedNotification(
+                    item=ThreadItem.model_validate(
+                        {
+                            "type": "agentMessage",
+                            "id": "message-1",
+                            "phase": "final_answer",
+                            "text": self.result.final_response,
+                        }
+                    ),
+                    completed_at_ms=2,
+                    thread_id="thread-1",
+                    turn_id=self.result.id,
+                ),
+            )
+        if self.result.usage is not None:
+            yield Notification(
+                method="thread/tokenUsage/updated",
+                payload=ThreadTokenUsageUpdatedNotification(
+                    thread_id="thread-1",
+                    token_usage=self.result.usage,
+                    turn_id=self.result.id,
+                ),
+            )
+        yield completed_event(self.result.status, self.result.error, self.result.id)
 
 
 @dataclass(slots=True)

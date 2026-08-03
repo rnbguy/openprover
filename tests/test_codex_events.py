@@ -1,3 +1,5 @@
+from dataclasses import replace
+
 import pytest
 from openai_codex.models import (
     AgentMessageDeltaNotification,
@@ -7,8 +9,9 @@ from openai_codex.models import (
     ReasoningSummaryTextDeltaNotification,
     ReasoningTextDeltaNotification,
 )
-from openai_codex.types import ThreadItem, TurnStatus
+from openai_codex.types import ThreadItem, ThreadTokenUsage, TurnStatus
 
+from openprover.llm._codex_events import usage_from_result
 from tests.codex_fakes import FakeTurn, client, completed_event, result
 
 
@@ -201,3 +204,35 @@ def test_archive_includes_json_schema(monkeypatch: pytest.MonkeyPatch, tmp_path)
     codex.call("prompt", "system", json_schema=schema, archive_path=archive_path)
 
     assert "======== JSON SCHEMA ========" in archive_path.read_text()
+
+
+def test_usage_normalization_uses_cumulative_total():
+    turn_result = replace(
+        result(),
+        usage=ThreadTokenUsage.model_validate(
+            {
+                "last": {
+                    "inputTokens": 3,
+                    "cachedInputTokens": 1,
+                    "outputTokens": 2,
+                    "reasoningOutputTokens": 1,
+                    "totalTokens": 5,
+                },
+                "total": {
+                    "inputTokens": 11,
+                    "cachedInputTokens": 2,
+                    "outputTokens": 7,
+                    "reasoningOutputTokens": 5,
+                    "totalTokens": 18,
+                },
+            }
+        ),
+    )
+
+    assert usage_from_result(turn_result) == {
+        "input_tokens": 11,
+        "cached_input_tokens": 2,
+        "output_tokens": 7,
+        "reasoning_output_tokens": 5,
+        "total_tokens": 18,
+    }

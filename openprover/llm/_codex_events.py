@@ -71,9 +71,6 @@ class _StreamState:
 
 def run_turn(turn: TurnHandle, callbacks: StreamCallbacks) -> tuple[TurnResult, str, str]:
     """Consume a typed turn stream while forwarding OpenProver callbacks."""
-    if callbacks.stream is None and callbacks.tool is None and callbacks.tool_start is None:
-        return turn.run(), "", ""
-
     state = _StreamState()
     stream = turn.stream()
     turn_completed = False
@@ -245,7 +242,7 @@ def usage_from_result(turn_result: TurnResult) -> JsonObject:
             "reasoning_output_tokens": 0,
             "total_tokens": 0,
         }
-    usage = turn_result.usage.last
+    usage = turn_result.usage.total
     return {
         "input_tokens": usage.input_tokens,
         "cached_input_tokens": usage.cached_input_tokens,

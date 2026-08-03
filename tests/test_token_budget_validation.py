@@ -97,3 +97,25 @@ def test_checkpoint_rejects_invalid_token_values_without_runtime_mutation(
     assert config_path.read_text() == original
     assert prover.budget.total_output_tokens == 0
     assert tui.updates == []
+
+
+@pytest.mark.parametrize("value", ["0", "-1"])
+def test_fresh_run_rejects_non_positive_max_tokens_before_prover_construction(
+    monkeypatch, value, capsys,
+):
+    created = False
+
+    def unexpected_prover(*_args, **_kwargs):
+        nonlocal created
+        created = True
+        raise AssertionError("Prover construction must not occur")
+
+    monkeypatch.setattr(cli, "Prover", unexpected_prover)
+    monkeypatch.setattr(sys, "argv", ["openprover", "--max-tokens", value])
+
+    with pytest.raises(SystemExit) as error:
+        cli._cmd_prove()
+
+    assert error.value.code == 2
+    assert created is False
+    assert "invalid positive integer value" in capsys.readouterr().err

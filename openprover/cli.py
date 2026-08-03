@@ -249,7 +249,7 @@ def _cmd_prove():
     parser.add_argument("--worker-model", choices=model_choices, default=None, help="Override model for worker (defaults to --model)")
     parser.add_argument("--provider-url", default="http://localhost:8000", help="Server URL for local models (default: http://localhost:8000)")
     budget_group = parser.add_mutually_exclusive_group()
-    budget_group.add_argument("--max-tokens", type=int, default=None, metavar="N", help="Output token budget (mutually exclusive with --max-time)")
+    budget_group.add_argument("--max-tokens", type=positive_int, default=None, metavar="N", help="Output token budget (mutually exclusive with --max-time)")
     budget_group.add_argument("--max-time", type=str, default=None, metavar="DURATION", help="Wall-clock time budget, e.g. '30m', '2h' (default: 4h)")
     parser.add_argument("--conclude-after", type=float, default=0.99, metavar="RATIO", help="Fraction of budget that triggers conclusion (0.9-1.0, default: 0.99)")
     parser.add_argument("--autonomous", action="store_true", help="Start in autonomous mode (default: interactive)")

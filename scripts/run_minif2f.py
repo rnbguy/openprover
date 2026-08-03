@@ -474,7 +474,7 @@ def main():
     budget = parser.add_mutually_exclusive_group()
     budget.add_argument("--max-time", default=None, metavar="DURATION",
                         help="Time budget per problem (e.g. '10m', '2h')")
-    budget.add_argument("--max-tokens", type=int, default=None, metavar="N",
+    budget.add_argument("--max-tokens", type=positive_int, default=None, metavar="N",
                         help="Output token budget per problem")
     parser.add_argument("--informal", action="store_true",
                         help="Skip Lean verification (informal only)")

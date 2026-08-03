@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from . import prompts
-from .budget import Budget, ELAPSED_SECONDS_LINE_PATTERN, format_elapsed_seconds
+from .budget import Budget, BudgetExhausted, ELAPSED_SECONDS_LINE_PATTERN, format_elapsed_seconds
 from .lean import LeanTheorem, LeanWorkDir, run_lean_check, lean_has_errors, WORKER_TOOLS, execute_worker_tool
 from .llm import Interrupted, CodexClient, LLMClient
 from .llm._base import is_transient_error
@@ -35,11 +35,11 @@ def _use_thinking_as_result(resp: dict) -> dict:
     return resp
 
 
-def _call_phase2(llm, **kwargs):
+def _call_phase2(prover, llm, **kwargs):
     """Dispatch a phase-two call with Claude-only reasoning suppression."""
     if isinstance(llm, LLMClient):
-        return llm.call(no_thinking=True, **kwargs)
-    return llm.call(**kwargs)
+        return prover._call_with_budget(llm.call, no_thinking=True, **kwargs)
+    return prover._call_with_budget(llm.call, **kwargs)
 
 
 def _compose_responses(*responses: dict) -> dict:
@@ -724,7 +724,7 @@ class Prover:
             while True:
                 self.tui.stream_start(label, tab="planner")
                 try:
-                    resp = self.planner_llm.call(
+                    resp = self._call_with_budget(self.planner_llm.call,
                         prompt=call_prompt,
                         system_prompt=system_prompt,
                         label=f"planner_step_{self.step_num}{retry_suffix}",
@@ -732,6 +732,11 @@ class Prover:
                         archive_path=step_dir / f"planner_call{retry_suffix}.md",
                     )
                     break  # success
+                except BudgetExhausted:
+                    self.tui.stream_end(tab="planner")
+                    self._save_step_meta(step_dir, status="budget_exhausted",
+                                         error="budget_exhausted", resp=last_resp)
+                    return "stop"
                 except Interrupted:
                     self.tui.stream_end(tab="planner")
                     logger.info("Planner interrupted")
@@ -748,7 +753,6 @@ class Prover:
                     return action  # "stop" or "continue"
             self.tui.stream_end(tab="planner")
             resp = _use_thinking_as_result(resp)
-            self._track_output_tokens(resp)
             completed_responses.append(resp)
             last_resp = _compose_responses(*completed_responses)
             logger.info("Planner: %dms $%.4f",
@@ -792,7 +796,7 @@ class Prover:
                                         "<OPENPROVER_ACTION>...</OPENPROVER_ACTION> block."
                                     )},
                                 ]
-                                resp2 = self.planner_llm.chat(
+                                resp2 = self._call_with_budget(self.planner_llm.chat,
                                     messages=messages,
                                     tools=None,
                                     max_tokens=phase2_max,
@@ -804,6 +808,7 @@ class Prover:
                             else:
                                 phase2_prompt = prompts.format_planner_truncated(prompt, resp["result"])
                                 resp2 = _call_phase2(
+                                    self,
                                     self.planner_llm,
                                     prompt=phase2_prompt,
                                     system_prompt=system_prompt,
@@ -813,6 +818,13 @@ class Prover:
                                     max_tokens=phase2_max,
                                 )
                             break  # success
+                        except BudgetExhausted:
+                            self.tui.stream_end(tab="planner")
+                            self._save_step_meta(
+                                step_dir, status="budget_exhausted",
+                                error="budget_exhausted", resp=last_resp,
+                            )
+                            return "stop"
                         except Interrupted:
                             self.tui.stream_end(tab="planner")
                             return self._handle_interrupt(step_dir, last_resp)
@@ -829,7 +841,6 @@ class Prover:
                             return action
                     self.tui.stream_end(tab="planner")
                     resp2 = _use_thinking_as_result(resp2)
-                    self._track_output_tokens(resp2)
                     completed_responses.append(resp2)
                     resp = _compose_responses(*completed_responses)
                     last_resp = resp
@@ -1700,13 +1711,6 @@ class Prover:
 
         self._push_output("\n\n".join(all_parts))
 
-        # Track worker + verifier output tokens in budget
-        for wresp in worker_resps:
-            if wresp:
-                self._track_output_tokens(wresp)
-        for vresp in verifier_resps.values():
-            self._track_output_tokens(vresp)
-
         # Extract and store verdicts for TUI display
         verdicts = {}
         for i, vresp in verifier_resps.items():
@@ -1772,7 +1776,7 @@ class Prover:
         while True:
             self.tui.stream_start("searching", tab=wid)
             try:
-                search_resp = self.worker_llm.call(
+                search_resp = self._call_with_budget(self.worker_llm.call,
                     prompt=prompt,
                     system_prompt=prompts.SEARCH_SYSTEM_PROMPT,
                     label=f"search_step_{self.step_num}",
@@ -1781,10 +1785,17 @@ class Prover:
                     archive_path=workers_dir / "search_call.md",
                 )
                 self.tui.stream_end(tab=wid)
-                self._track_output_tokens(search_resp)
                 result = search_resp["result"]
                 search_resp["error"] = ""
                 self._push_output(result)
+                (workers_dir / "result_0.md").write_text(result)
+                break
+            except BudgetExhausted:
+                self.tui.stream_end(tab=wid)
+                result = "(skipped: budget exhausted)"
+                self._push_output(result)
+                search_resp = {"result": result, "cost": 0.0, "duration_ms": 0,
+                               "raw": {}, "error": "budget_exhausted"}
                 (workers_dir / "result_0.md").write_text(result)
                 break
             except Interrupted:
@@ -1817,8 +1828,8 @@ class Prover:
         self.tui.set_waiting_status("")
 
         status = "ok"
-        if search_resp and search_resp.get("error") == "interrupted":
-            status = "interrupted"
+        if search_resp and search_resp.get("error") in ("interrupted", "budget_exhausted"):
+            status = search_resp["error"]
         self._save_step_meta(
             step_dir, status=status, action="literature_search",
             resp=planner_resp, workers=[search_resp] if search_resp else None,
@@ -1878,7 +1889,7 @@ class Prover:
         while True:
             self.tui.stream_start("working...", tab=worker_id)
             try:
-                resp = self.worker_llm.call(
+                resp = self._call_with_budget(self.worker_llm.call,
                     prompt=prompt,
                     system_prompt=system_prompt,
                     label=worker_id,
@@ -1915,7 +1926,7 @@ class Prover:
                                 "Output only the answer — no re-reasoning, no backtracking, no narration."
                             )},
                         ]
-                        resp2 = self.worker_llm.chat(
+                        resp2 = self._call_with_budget(self.worker_llm.chat,
                             messages=messages,
                             tools=None,
                             max_tokens=phase2_max,
@@ -1934,6 +1945,7 @@ class Prover:
                             f"```\n{resp['result'][-2000:]}\n```"
                         )
                         resp2 = _call_phase2(
+                            self,
                             self.worker_llm,
                             prompt=phase2_prompt,
                             system_prompt=system_prompt,
@@ -1951,6 +1963,16 @@ class Prover:
 
                 resp["error"] = ""
                 break  # success
+            except BudgetExhausted:
+                self.tui.stream_end(tab=worker_id)
+                if completed_responses:
+                    resp = _compose_responses(*completed_responses)
+                    resp["result"] = "(skipped: budget exhausted)"
+                    resp["error"] = "budget_exhausted"
+                else:
+                    resp = {"result": "(skipped: budget exhausted)", "cost": 0.0,
+                            "duration_ms": 0, "raw": {}, "error": "budget_exhausted"}
+                break
             except Interrupted:
                 self.tui.stream_end(tab=worker_id)
                 logger.info("[%s] interrupted", worker_id)
@@ -1970,7 +1992,8 @@ class Prover:
                         "duration_ms": accounting.get("duration_ms", 0),
                         "raw": accounting.get("raw", {}), "error": str(e)}
                 break
-        resp["tool_calls_log"] = tool_calls_log
+        if resp.get("error") != "budget_exhausted":
+            resp["tool_calls_log"] = tool_calls_log
         return resp
 
     @staticmethod
@@ -2026,7 +2049,7 @@ class Prover:
                     phase2_kwargs = {}
                     if conversation_id:
                         phase2_kwargs["conversation_id"] = conversation_id
-                    resp = self.worker_llm.chat(
+                    resp = self._call_with_budget(self.worker_llm.chat,
                         messages=messages,
                         tools=None,
                         max_tokens=answer_reserve,
@@ -2065,7 +2088,7 @@ class Prover:
                     phase2_kwargs = {}
                     if conversation_id:
                         phase2_kwargs["conversation_id"] = conversation_id
-                    resp = self.worker_llm.chat(
+                    resp = self._call_with_budget(self.worker_llm.chat,
                         messages=messages,
                         tools=None,
                         max_tokens=answer_reserve,
@@ -2091,7 +2114,7 @@ class Prover:
                 chat_kwargs = {}
                 if conversation_id:
                     chat_kwargs["conversation_id"] = conversation_id
-                resp = self.worker_llm.chat(
+                resp = self._call_with_budget(self.worker_llm.chat,
                     messages=messages,
                     tools=WORKER_TOOLS,
                     label=f"{worker_id}_turn_{call_idx}",
@@ -2183,7 +2206,7 @@ class Prover:
                     phase2_kwargs = {}
                     if conversation_id:
                         phase2_kwargs["conversation_id"] = conversation_id
-                    resp = self.worker_llm.chat(
+                    resp = self._call_with_budget(self.worker_llm.chat,
                         messages=messages,
                         tools=None,
                         max_tokens=answer_reserve or 16_000,
@@ -2206,6 +2229,14 @@ class Prover:
 
             result = _compose_responses(*responses)
             result["error"] = ""
+        except BudgetExhausted:
+            self.tui.stream_end(tab=worker_id)
+            if responses:
+                result = _compose_responses(*responses)
+                result["error"] = "budget_exhausted"
+            else:
+                result = {"result": "(skipped: budget exhausted)", "cost": 0.0,
+                          "duration_ms": 0, "raw": {}, "error": "budget_exhausted"}
         except Interrupted:
             self.tui.stream_end(tab=worker_id)
             logger.info("[%s] interrupted", worker_id)
@@ -2221,7 +2252,8 @@ class Prover:
                 retry_result = self._run_worker_multi_turn(prompt, system_prompt, worker_id, archive_path)
                 if responses:
                     result = _compose_responses(*responses, retry_result)
-                    result["tool_calls_log"] = retry_result["tool_calls_log"]
+                    if "tool_calls_log" in retry_result:
+                        result["tool_calls_log"] = retry_result["tool_calls_log"]
                     return result
                 return retry_result
             self.tui.tab_log(worker_id, f"Error: {e}", color="red")
@@ -2230,7 +2262,8 @@ class Prover:
                       "raw": _compose_responses(*responses)["raw"] if responses else {},
                       "error": str(e)}
 
-        result["tool_calls_log"] = tool_calls_log
+        if result.get("error") != "budget_exhausted":
+            result["tool_calls_log"] = tool_calls_log
         return result
 
     def _run_verifiers(self, tasks: list[dict], worker_resps: list[dict | None],
@@ -2238,7 +2271,7 @@ class Prover:
         """Run independent verifiers for all non-interrupted workers. Returns {worker_idx: resp}."""
         non_interrupted = [
             (i, t, w) for i, (t, w) in enumerate(zip(tasks, worker_resps))
-            if w and w.get("error") != "interrupted" and w.get("result")
+            if w and not w.get("error") and w.get("result")
         ]
         verifier_resps: dict[int, dict] = {}
         if not non_interrupted:
@@ -2302,7 +2335,7 @@ class Prover:
         while True:
             self.tui.stream_start("verifying...", tab=verifier_id)
             try:
-                resp = self.worker_llm.call(
+                resp = self._call_with_budget(self.worker_llm.call,
                     prompt=prompt,
                     system_prompt=system_prompt,
                     label=verifier_id,
@@ -2336,7 +2369,7 @@ class Prover:
                                 "VERDICT: NEEDS MINOR FIXES - <brief reason>"
                             )},
                         ]
-                        resp2 = self.worker_llm.chat(
+                        resp2 = self._call_with_budget(self.worker_llm.chat,
                             messages=messages,
                             tools=None,
                             max_tokens=phase2_max,
@@ -2358,6 +2391,7 @@ class Prover:
                             f"VERDICT: NEEDS MINOR FIXES - <brief reason>"
                         )
                         resp2 = _call_phase2(
+                            self,
                             self.worker_llm,
                             prompt=phase2_prompt,
                             system_prompt=system_prompt,
@@ -2376,6 +2410,16 @@ class Prover:
 
                 resp["error"] = ""
                 break  # success
+            except BudgetExhausted:
+                self.tui.stream_end(tab=verifier_id)
+                if completed_responses:
+                    resp = _compose_responses(*completed_responses)
+                    resp["result"] = "(skipped: budget exhausted)"
+                    resp["error"] = "budget_exhausted"
+                else:
+                    resp = {"result": "(skipped: budget exhausted)", "cost": 0.0,
+                            "duration_ms": 0, "raw": {}, "error": "budget_exhausted"}
+                break
             except Interrupted:
                 self.tui.stream_end(tab=verifier_id)
                 logger.info("[%s] interrupted", verifier_id)
@@ -2538,61 +2582,87 @@ class Prover:
         self._transient_backoff = min(delay * 2, 60)
         return "retry"
 
+    def _call_with_budget(self, call, /, *args, **kwargs):
+        """Admit, account for, and checkpoint one LLM call."""
+        if not hasattr(self, "budget") or not hasattr(self, "_budget_persistence_lock"):
+            resp = call(*args, **kwargs)
+            if getattr(self._track_output_tokens, "__func__", None) is not Prover._track_output_tokens:
+                self._track_output_tokens(resp)
+            return resp
+        with self._budget_persistence_lock:
+            self._checkpoint_budget_state_locked()
+            if self.budget.is_exhausted():
+                raise BudgetExhausted()
+        try:
+            resp = call(*args, **kwargs)
+        except BaseException:  # noqa: BROAD_EXCEPT_OK - preserve model exceptions
+            try:
+                self._checkpoint_budget_state()
+            except Exception:
+                logger.exception("Failed to checkpoint budget state")
+            raise
+        self._track_output_tokens(resp)
+        return resp
+
     def _checkpoint_budget_state(self, output_tokens: int = 0):
         """Persist elapsed time and output tokens before updating the runtime state."""
         with self._budget_persistence_lock:
-            total_output_tokens = self.budget.total_output_tokens + output_tokens
-            elapsed_seconds = self.budget.elapsed_seconds()
-            config_path = self.work_dir / "run_config.toml"
-            config_text = config_path.read_text()
-            token_state_lines = re.findall(
-                r"^budget_output_tokens[ \t]*=.*$",
-                config_text,
-                re.MULTILINE,
+            self._checkpoint_budget_state_locked(output_tokens)
+
+    def _checkpoint_budget_state_locked(self, output_tokens: int = 0):
+        """Persist state while the budget persistence lock is held."""
+        total_output_tokens = self.budget.total_output_tokens + output_tokens
+        elapsed_seconds = self.budget.elapsed_seconds()
+        config_path = self.work_dir / "run_config.toml"
+        config_text = config_path.read_text()
+        token_state_lines = re.findall(
+            r"^budget_output_tokens[ \t]*=.*$",
+            config_text,
+            re.MULTILINE,
+        )
+        if len(token_state_lines) != 1:
+            raise RuntimeError(
+                "run_config.toml must contain exactly one budget_output_tokens line"
             )
-            if len(token_state_lines) != 1:
-                raise RuntimeError(
-                    "run_config.toml must contain exactly one budget_output_tokens line"
-                )
-            config, token_replacements = re.subn(
-                r"^budget_output_tokens[ \t]*=[ \t]*\d+$",
-                f"budget_output_tokens = {total_output_tokens}",
-                config_text,
-                flags=re.MULTILINE,
+        config, token_replacements = re.subn(
+            r"^budget_output_tokens[ \t]*=[ \t]*\d+$",
+            f"budget_output_tokens = {total_output_tokens}",
+            config_text,
+            flags=re.MULTILINE,
+        )
+        if token_replacements != 1:
+            raise RuntimeError(
+                "run_config.toml budget_output_tokens must be a nonnegative integer"
             )
-            if token_replacements != 1:
-                raise RuntimeError(
-                    "run_config.toml budget_output_tokens must be a nonnegative integer"
-                )
-            elapsed_state_lines = re.findall(
-                r"^budget_elapsed_seconds[ \t]*=.*$",
-                config_text,
-                re.MULTILINE,
+        elapsed_state_lines = re.findall(
+            r"^budget_elapsed_seconds[ \t]*=.*$",
+            config_text,
+            re.MULTILINE,
+        )
+        if len(elapsed_state_lines) != 1:
+            raise RuntimeError(
+                "run_config.toml must contain exactly one budget_elapsed_seconds line"
             )
-            if len(elapsed_state_lines) != 1:
-                raise RuntimeError(
-                    "run_config.toml must contain exactly one budget_elapsed_seconds line"
-                )
-            if not re.fullmatch(ELAPSED_SECONDS_LINE_PATTERN, elapsed_state_lines[0]):
-                raise RuntimeError(
-                    "run_config.toml budget_elapsed_seconds must be a nonnegative number"
-                )
-            config, elapsed_replacements = re.subn(
-                ELAPSED_SECONDS_LINE_PATTERN,
-                f"budget_elapsed_seconds = {format_elapsed_seconds(elapsed_seconds)}",
-                config,
-                flags=re.MULTILINE,
+        if not re.fullmatch(ELAPSED_SECONDS_LINE_PATTERN, elapsed_state_lines[0]):
+            raise RuntimeError(
+                "run_config.toml budget_elapsed_seconds must be a nonnegative number"
             )
-            if elapsed_replacements != 1:
-                raise RuntimeError(
-                    "run_config.toml budget_elapsed_seconds must be a nonnegative number"
-                )
-            temp_path = config_path.with_name(f"{config_path.name}.tmp")
-            temp_path.write_text(config)
-            temp_path.replace(config_path)
-            if output_tokens > 0:
-                self.budget.add_output_tokens(output_tokens)
-            self.tui.update_budget(self.budget.status_str())
+        config, elapsed_replacements = re.subn(
+            ELAPSED_SECONDS_LINE_PATTERN,
+            f"budget_elapsed_seconds = {format_elapsed_seconds(elapsed_seconds)}",
+            config,
+            flags=re.MULTILINE,
+        )
+        if elapsed_replacements != 1:
+            raise RuntimeError(
+                "run_config.toml budget_elapsed_seconds must be a nonnegative number"
+            )
+        temp_path = config_path.with_name(f"{config_path.name}.tmp")
+        temp_path.write_text(config)
+        temp_path.replace(config_path)
+        if output_tokens > 0:
+            self.budget.add_output_tokens(output_tokens)
+        self.tui.update_budget(self.budget.status_str())
 
     def _track_output_tokens(self, resp: dict):
         """Add output tokens from an LLM response to the budget."""
@@ -2672,7 +2742,7 @@ class Prover:
         )
         self.tui.stream_start("writing discussion", tab="planner")
         try:
-            resp = self.planner_llm.call(
+            resp = self._call_with_budget(self.planner_llm.call,
                 prompt=prompt,
                 system_prompt=prompts.discussion_system_prompt(),
                 label="discussion",
@@ -2682,9 +2752,9 @@ class Prover:
             self.tui.stream_end(tab="planner")
             (self.work_dir / "DISCUSSION.md").write_text(resp["result"])
             self.tui.log(f"  {self.work_dir / 'DISCUSSION.md'}", dim=True)
-        except (Interrupted, RuntimeError) as e:
+        except (Interrupted, RuntimeError, BudgetExhausted) as e:
             self.tui.stream_end(tab="planner")
-            if not isinstance(e, Interrupted):
+            if not isinstance(e, (Interrupted, BudgetExhausted)):
                 self.tui.log(f"Error generating discussion: {e}", color="red")
             (self.work_dir / "DISCUSSION.md").write_text(
                 f"# Discussion\n\nSession ended after {self.step_num} steps.\n\n"

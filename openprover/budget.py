@@ -11,6 +11,10 @@ ELAPSED_SECONDS_LINE_PATTERN = (
 )
 
 
+class BudgetExhausted(Exception):
+    """Raised when an LLM call cannot enter an exhausted budget."""
+
+
 def format_elapsed_seconds(seconds: float) -> str:
     """Format elapsed seconds as a loader-compatible fixed-point number."""
     if not math.isfinite(seconds):

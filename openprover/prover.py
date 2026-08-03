@@ -15,6 +15,7 @@ from typing import Final
 from . import prompts
 from .budget import Budget, BudgetExhausted, ELAPSED_SECONDS_LINE_PATTERN, format_elapsed_seconds
 from .lean import LeanTheorem, LeanWorkDir, run_lean_check, lean_has_errors, WORKER_TOOLS, execute_worker_tool
+from .lean.axioms import run_final_lean_axiom_check
 from .llm import CodexClient, Interrupted, LLMClient
 from .llm.codex import CodexTurnError
 from .llm._base import is_transient_error
@@ -1264,7 +1265,8 @@ class Prover:
             self._push_output("submit_lean_proof rejected: provide lean_proof_slug.")
             return "continue"
 
-        if not self.lean_work_dir:
+        lean_project_dir = self.lean_project_dir
+        if not self.lean_work_dir or not lean_project_dir:
             self.tui.log("submit_lean_proof: no Lean project configured", color="red")
             self._push_output("submit_lean_proof rejected: no Lean project configured.")
             return "continue"
@@ -1307,7 +1309,7 @@ class Prover:
         # Write and verify
         proof_path = self.lean_work_dir.make_file("proof-attempt", proof_text)
         self.tui.log(f"Verifying Lean proof: {proof_path.name}...", dim=True)
-        success, lean_feedback, cmd_info = run_lean_check(proof_path, self.lean_project_dir)
+        success, lean_feedback, cmd_info = run_lean_check(proof_path, lean_project_dir)
 
         # Archive
         lean_dir = step_dir / "lean"
@@ -1316,22 +1318,56 @@ class Prover:
         (lean_dir / "proof_result.txt").write_text("OK" if success else lean_feedback)
         (lean_dir / "proof_cmd.txt").write_text(cmd_info)
 
-        if success:
+        provenance_success = True
+        provenance_feedback = ""
+        if success and self.lean_theorem_text:
+            (lean_dir / "proof_axiom_result.txt").write_text(
+                "Lean axiom audit incomplete"
+            )
+            provenance_success, provenance_feedback, provenance_cmd_info = (
+                run_final_lean_axiom_check(
+                    self.lean_theorem_text,
+                    proof_path,
+                    lean_project_dir,
+                )
+            )
+            (lean_dir / "proof_axiom_result.txt").write_text(
+                "OK" if provenance_success else provenance_feedback
+            )
+            (lean_dir / "proof_axiom_cmd.txt").write_text(provenance_cmd_info)
+
+        proof_verified = success and provenance_success
+        if proof_verified:
             self.lean_work_dir.write_proof(proof_text)
             (self.work_dir / "PROOF.lean").write_text(proof_text)
             self.tui.log("Lean proof verified!", color="green", bold=True)
             logger.info("Lean proof verified! PROOF.lean written from [[%s]]", lean_proof_slug)
             feedback = f"PROOF.lean written from [[{lean_proof_slug}]] (verified OK)."
             return self._check_completion(feedback)
-        else:
-            self.tui.log("Lean verification failed", color="red")
-            logger.info("Lean proof verification failed")
+
+        if success:
+            self.tui.log("Lean proof axiom audit failed", color="red")
+            logger.info(
+                "Lean proof axiom audit failed for [[%s]]: %s",
+                lean_proof_slug,
+                provenance_feedback,
+            )
             self._push_output(
-                f"submit_lean_proof: Lean verification FAILED for [[{lean_proof_slug}]].\n\n"
-                f"Lean feedback:\n```\n{lean_feedback}\n```\n\n"
-                f"Fix the issues and try again."
+                "submit_lean_proof: final Lean axiom audit FAILED for "
+                f"[[{lean_proof_slug}]].\n\n"
+                f"Axiom feedback:\n```\n{provenance_feedback}\n```\n\n"
+                "Remove the listed disallowed axiom dependencies and try again."
             )
             return "continue"
+
+        self.tui.log("Lean verification failed", color="red")
+        logger.info("Lean proof verification failed")
+        self._push_output(
+            f"submit_lean_proof: Lean verification FAILED for [[{lean_proof_slug}]].\n\n"
+            f"Lean feedback:\n```\n{lean_feedback}\n```\n\n"
+            f"Fix the issues and try again."
+        )
+        return "continue"
 
     def _check_completion(self, feedback: str) -> str:
         """Check if all required proofs are present and return stop/continue."""

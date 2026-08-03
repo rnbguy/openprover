@@ -261,6 +261,14 @@ def run_baseline(
         with transcript_path.open("a") as f:
             f.write(text)
 
+    # Parse the input theorem so we can splice proof bodies into its
+    # original sorries — the model can never edit the statement.
+    parsed = LeanTheorem(theorem_lean)
+    if parsed.num_sorries == 0:
+        return {"status": "error", "elapsed": 0, "turns": 0,
+                "verifications": 0, "tokens": 0,
+                "error": "input theorem contains no `sorry` placeholder"}
+
     if model in CLAUDE_MODELS:
         client = LLMClient(model=model, archive_dir=archive_dir)
     elif model in GLM_MODEL_MAP:
@@ -285,27 +293,6 @@ def run_baseline(
         client = MistralClient(model=mistral_model, archive_dir=archive_dir)
     work_dir = LeanWorkDir(lean_project_dir)
 
-    # Parse the input theorem so we can splice proof bodies into its
-    # original sorries — the model can never edit the statement.
-    parsed = LeanTheorem(theorem_lean)
-    if parsed.num_sorries == 0:
-        return {"status": "error", "elapsed": 0, "turns": 0,
-                "verifications": 0, "tokens": 0,
-                "error": "input theorem contains no `sorry` placeholder"}
-
-    initial_user = INITIAL_USER_MSG.format(
-        informal=theorem_informal or "(none provided)",
-        formal=theorem_lean,
-        num_sorries=parsed.num_sorries,
-    )
-
-    # For Mistral models we use the Conversations API's server-side
-    # context (conversation_id) so we only send the NEW user message
-    # each turn — avoids quadratic memory/disk growth.  For Claude we
-    # still accumulate the full transcript client-side.
-    use_conv_id = getattr(client, "mistral", False)
-    conversation_id: str | None = None
-    transcript: list[str] = [initial_user]
     log_lines: list[str] = []
     turns = 0
     verifications = 0
@@ -318,28 +305,42 @@ def run_baseline(
         if not quiet:
             print(f"  [{name}] {msg}", flush=True)
 
-    budget_str = (f"{max_time:.0f}s" if max_time is not None
-                  else f"{max_tokens} tokens")
-    log(f"starting (model={model}, budget={budget_str})")
-
-    # Streaming callback (used by MistralClient if stream=True)
-    dim = "\033[2m" if sys.stdout.isatty() else ""
-    reset = "\033[0m" if sys.stdout.isatty() else ""
-    state = {"in_thinking": False}
-
-    def stream_cb(text: str, kind: str):
-        if kind == "thinking":
-            if not state["in_thinking"]:
-                sys.stdout.write(dim)
-                state["in_thinking"] = True
-        else:
-            if state["in_thinking"]:
-                sys.stdout.write(reset)
-                state["in_thinking"] = False
-        sys.stdout.write(text)
-        sys.stdout.flush()
-
     try:
+        initial_user = INITIAL_USER_MSG.format(
+            informal=theorem_informal or "(none provided)",
+            formal=theorem_lean,
+            num_sorries=parsed.num_sorries,
+        )
+
+        # For Mistral models we use the Conversations API's server-side
+        # context (conversation_id) so we only send the NEW user message
+        # each turn — avoids quadratic memory/disk growth.  For Claude we
+        # still accumulate the full transcript client-side.
+        use_conv_id = getattr(client, "mistral", False)
+        conversation_id: str | None = None
+        transcript: list[str] = [initial_user]
+
+        budget_str = (f"{max_time:.0f}s" if max_time is not None
+                      else f"{max_tokens} tokens")
+        log(f"starting (model={model}, budget={budget_str})")
+
+        # Streaming callback (used by MistralClient if stream=True)
+        dim = "\033[2m" if sys.stdout.isatty() else ""
+        reset = "\033[0m" if sys.stdout.isatty() else ""
+        state = {"in_thinking": False}
+
+        def stream_cb(text: str, kind: str):
+            if kind == "thinking":
+                if not state["in_thinking"]:
+                    sys.stdout.write(dim)
+                    state["in_thinking"] = True
+            else:
+                if state["in_thinking"]:
+                    sys.stdout.write(reset)
+                    state["in_thinking"] = False
+            sys.stdout.write(text)
+            sys.stdout.flush()
+
         while True:
             elapsed = time.monotonic() - start
             if max_time is not None and elapsed >= max_time:
@@ -571,6 +572,11 @@ def run_baseline(
         (run_dir / "log.txt").write_text("\n".join(log_lines) + "\n")
         return {"status": "error", "elapsed": elapsed, "turns": turns,
                 "verifications": verifications, "tokens": tokens, "error": str(e)}
+    finally:
+        try:
+            client.cleanup()
+        finally:
+            work_dir.cleanup()
 
     elapsed = time.monotonic() - start
     status = "proved" if proved else "not_proved"

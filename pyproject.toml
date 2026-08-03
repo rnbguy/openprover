@@ -10,8 +10,10 @@ readme = "README.md"
 authors = [{name = "Matěj Kripner", email = "kripner@ufal.mff.cuni.cz"}]
 requires-python = ">=3.10"
 dependencies = [
+    "anyio>=4",
     "mcp==2.0.0",
     "openai-codex==0.144.4",
+    "pydantic>=2",
 ]
 
 [project.scripts]

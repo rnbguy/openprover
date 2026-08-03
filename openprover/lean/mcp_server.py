@@ -12,6 +12,7 @@ import os
 from pathlib import Path
 from threading import Lock
 
+import anyio
 from mcp.server import MCPServer
 
 from openprover import __version__
@@ -23,13 +24,13 @@ from .core import (
     run_lean_check,
     strip_code_fences,
 )
+from .search import search
 
 mcp = MCPServer("lean_tools", version=__version__)
 
 # Initialized lazily from environment variables
 _project_dir: Path | None = None
 _work_dir: LeanWorkDir | None = None
-_search_service = None
 _store: str = ""  # per-process store (each worker gets its own MCP subprocess)
 _store_lock = Lock()
 
@@ -59,28 +60,6 @@ def _get_work_dir() -> LeanWorkDir:
         else:
             _work_dir = LeanWorkDir(_get_project_dir())
     return _work_dir
-
-
-_has_gpu: bool | None = None
-
-def _gpu_available() -> bool:
-    global _has_gpu
-    if _has_gpu is None:
-        try:
-            import torch
-            _has_gpu = torch.cuda.is_available()
-        except Exception:
-            _has_gpu = False
-    return _has_gpu
-
-
-def _get_search_service():
-    global _search_service
-    if _search_service is None:
-        from lean_explore.search import SearchEngine, Service
-        engine = SearchEngine(use_local_data=False)
-        _search_service = Service(engine=engine)
-    return _search_service
 
 
 @mcp.tool(structured_output=False)
@@ -137,15 +116,10 @@ def lean_store(code: str) -> str:
 
 @mcp.tool(structured_output=False)
 async def lean_search(query: str) -> str:
-    """Search Lean 4 declarations by name or natural language description. Query with a declaration name (e.g. 'List.map', 'Nat.Prime') or an informal description (e.g. 'continuous function on a compact set'). Uses hybrid retrieval (lexical + semantic)."""
+    """Search hosted Lean 4 declarations by name or natural language description."""
     if not query.strip():
         raise ValueError("no query provided")
-    service = _get_search_service()
-    rerank = 25 if _gpu_available() else 0
-    response = await service.search(
-        query, limit=10, rerank_top=rerank,
-        packages=["Mathlib", "Batteries", "Init", "Lean", "Std"],
-    )
+    response = await anyio.to_thread.run_sync(search, query, 10)
     results = response.results
     if not results:
         return "No results found"

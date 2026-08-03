@@ -1,4 +1,5 @@
 from threading import Barrier
+from types import SimpleNamespace
 
 import anyio
 import pytest
@@ -8,22 +9,10 @@ from mcp.server import MCPServer
 from openprover import __version__
 from openprover.lean import mcp_server
 
-
-class EmptySearchResponse:
-    results = ()
-
-
-class EmptySearchService:
-    async def search(self, query: str, **kwargs):
-        return EmptySearchResponse()
-
-
 @pytest.fixture(autouse=True)
 def reset_mcp_server_state(monkeypatch: pytest.MonkeyPatch, tmp_path):
     monkeypatch.setattr(mcp_server, "_project_dir", tmp_path)
     monkeypatch.setattr(mcp_server, "_work_dir", mcp_server.LeanWorkDir(tmp_path))
-    monkeypatch.setattr(mcp_server, "_search_service", None)
-    monkeypatch.setattr(mcp_server, "_has_gpu", False)
     monkeypatch.setattr(mcp_server, "_store", "")
 
 
@@ -54,7 +43,17 @@ def test_lean_verify_returns_text_only_success(monkeypatch: pytest.MonkeyPatch):
 
 
 def test_lean_search_returns_text_only_success(monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setattr(mcp_server, "_search_service", EmptySearchService())
+    calls = []
+
+    def search_stub(query: str, limit: int = 10):
+        return SimpleNamespace(results=())
+
+    async def run_sync(function, *args):
+        calls.append((function, args))
+        return function(*args)
+
+    monkeypatch.setattr(mcp_server, "search", search_stub)
+    monkeypatch.setattr(mcp_server.anyio.to_thread, "run_sync", run_sync)
 
     async def call_search() -> None:
         async with Client(mcp_server.mcp, raise_exceptions=True) as client:
@@ -64,6 +63,7 @@ def test_lean_search_returns_text_only_success(monkeypatch: pytest.MonkeyPatch):
             assert result.structured_content is None
 
     anyio.run(call_search)
+    assert calls == [(search_stub, ("Nat.Prime", 10))]
 
 
 def test_concurrent_lean_store_keeps_each_verified_update(monkeypatch: pytest.MonkeyPatch):

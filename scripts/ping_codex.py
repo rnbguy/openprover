@@ -64,7 +64,7 @@ def _build_mcp_config(lean_project: str) -> dict:
                     "LEAN_PROJECT_DIR": str(Path(lean_project).resolve()),
                     "LEAN_WORK_DIR": str(Path(lean_project).resolve()),
                 },
-                "enabled_tools": ["lean_verify", "lean_search"],
+                "enabled_tools": ["lean_search"],
                 "required": True,
                 "startup_timeout_ms": 30000,
             }

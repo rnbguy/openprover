@@ -104,6 +104,16 @@ def test_ping_cleans_up_client(ping_harness):
     assert FakeCodexClient.instances[0].cleaned_up is True
 
 
+def test_ping_exposes_only_lean_search_to_codex(tmp_path):
+    module = load_script("ping_codex")
+
+    enabled_tools = module._build_mcp_config(str(tmp_path))["mcp_servers"]["lean_tools"][
+        "enabled_tools"
+    ]
+
+    assert enabled_tools == ["lean_search"]
+
+
 def test_ping_prints_codex_usage_fields(ping_harness, capsys):
     ping_harness.main([])
 

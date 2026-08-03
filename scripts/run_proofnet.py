@@ -3,20 +3,29 @@
 
 import argparse
 import json
+import os
 import re
+import signal
 import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
 
+from openprover.budget import parse_duration
 from openprover.cli import positive_int
 
 CLAUDE_MODELS = {"sonnet", "opus"}
 RATE_LIMIT_WAIT = 600  # seconds to wait before retrying after rate limit
+
+_active_procs: list[subprocess.Popen] = []
+_procs_lock = threading.Lock()
+_launch_lock = threading.Lock()
+_stop_launches = threading.Event()
 
 
 # ── Helpers ──────────────────────────────────────────────────────────
@@ -34,15 +43,21 @@ def _format_time(seconds: float) -> str:
     return f"{m}m{s:02d}s"
 
 
-def _parse_duration(s: str) -> float:
-    """Parse '10m', '2h', '1h30m' into seconds."""
-    total = 0.0
-    for match in re.finditer(r"(\d+(?:\.\d+)?)\s*([hms])", s):
-        val, unit = float(match.group(1)), match.group(2)
-        total += val * {"h": 3600, "m": 60, "s": 1}[unit]
-    if total == 0:
-        total = float(s)
-    return total
+def _terminate_proc(proc: subprocess.Popen) -> None:
+    if proc.poll() is not None:
+        return
+    try:
+        os.killpg(proc.pid, signal.SIGKILL)
+    except OSError:
+        proc.kill()
+    proc.wait()
+
+
+def _terminate_active_procs() -> None:
+    with _procs_lock:
+        procs = list(_active_procs)
+    for proc in procs:
+        _terminate_proc(proc)
 
 
 # ── Problem loading ──────────────────────────────────────────────────
@@ -176,37 +191,67 @@ def _run_openprover(
         if args.max_tokens:
             hard_timeout = 4 * 3600  # 4h wall-clock cap for token-based budgets
         else:
-            hard_timeout = _parse_duration(args.max_time or "4h") + 120
+            hard_timeout = parse_duration(args.max_time or "4h") + 120
+        deadline = start + hard_timeout
 
         while True:
-            try:
-                result = subprocess.run(cmd, capture_output=True, text=True,
-                                        timeout=hard_timeout)
-            except subprocess.TimeoutExpired:
+            if time.monotonic() >= deadline:
                 elapsed = time.monotonic() - start
                 return {"name": name, "status": "error", "elapsed": elapsed,
                         "error": f"hard timeout ({hard_timeout:.0f}s)"}
 
+            with _launch_lock:
+                if _stop_launches.is_set():
+                    return {"name": name, "status": "error", "elapsed": 0,
+                            "error": "interrupted"}
+                proc = subprocess.Popen(
+                    cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                    start_new_session=True,
+                )
+                with _procs_lock:
+                    _active_procs.append(proc)
+
+            try:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    elapsed = time.monotonic() - start
+                    return {"name": name, "status": "error", "elapsed": elapsed,
+                            "error": f"hard timeout ({hard_timeout:.0f}s)"}
+                try:
+                    stdout, stderr = proc.communicate(timeout=remaining)
+                except subprocess.TimeoutExpired:
+                    elapsed = time.monotonic() - start
+                    return {"name": name, "status": "error", "elapsed": elapsed,
+                            "error": f"hard timeout ({hard_timeout:.0f}s)"}
+            finally:
+                _terminate_proc(proc)
+                with _procs_lock:
+                    _active_procs.remove(proc)
+
             elapsed = time.monotonic() - start
 
-            if result.returncode != 0:
-                err = "\n".join((result.stderr or "unknown").strip().splitlines()[-3:])
+            if proc.returncode != 0:
+                err = "\n".join((stderr or "unknown").strip().splitlines()[-3:])
                 return {"name": name, "status": "error", "elapsed": elapsed, "error": err}
 
-            if "[result] rate_limited" in result.stdout:
+            if "[result] rate_limited" in stdout:
                 msg = (f"⚠️  WARNING: {name}: rate limited / spending limit hit, "
                        f"waiting {RATE_LIMIT_WAIT // 60}m before retry")
                 print(msg, flush=True)
                 print(msg, file=sys.stderr, flush=True)
-                time.sleep(RATE_LIMIT_WAIT)
+                time.sleep(min(RATE_LIMIT_WAIT, max(0, deadline - time.monotonic())))
+                if time.monotonic() >= deadline:
+                    elapsed = time.monotonic() - start
+                    return {"name": name, "status": "error", "elapsed": elapsed,
+                            "error": f"hard timeout ({hard_timeout:.0f}s)"}
                 continue  # retry the same problem
 
-            for line in result.stdout.splitlines():
+            for line in stdout.splitlines():
                 if line.startswith("[result] error"):
                     err = line[len("[result] error"):].lstrip(": ").strip() or "openprover exited with LLM errors"
                     return {"name": name, "status": "error", "elapsed": elapsed, "error": err}
 
-            status = "proved" if "[result] proved" in result.stdout else "not_proved"
+            status = "proved" if "[result] proved" in stdout else "not_proved"
             return {"name": name, "status": status, "elapsed": elapsed, "error": ""}
 
     except Exception as e:
@@ -235,7 +280,7 @@ def _run_baseline(
         max_time = None
         max_tokens = args.max_tokens
     else:
-        max_time = _parse_duration(args.max_time or "4h")
+        max_time = parse_duration(args.max_time or "4h")
         max_tokens = None
     result = run_baseline(
         name=name,
@@ -307,12 +352,12 @@ def _run_all(
         print(f"  Saved to {bench_dir / 'results.json'}")
         return
 
-    with ThreadPoolExecutor(max_workers=args.parallelism) as pool:
-        futures = {
-            pool.submit(runner, name, info, lean_project, bench_dir, args): name
-            for name, info in problems.items()
-        }
-
+    _stop_launches.clear()
+    pool = ThreadPoolExecutor(max_workers=args.parallelism)
+    futures = {}
+    try:
+        for name, info in problems.items():
+            futures[pool.submit(runner, name, info, lean_project, bench_dir, args)] = name
         for future in as_completed(futures):
             entry = future.result()
             completed += 1
@@ -348,6 +393,16 @@ def _run_all(
             if entry.get("error"):
                 for line in entry["error"].strip().splitlines():
                     print(f"           {line}", file=sys.stderr)
+    except BaseException:
+        with _launch_lock:
+            _stop_launches.set()
+        for future in futures:
+            future.cancel()
+        _terminate_active_procs()
+        pool.shutdown(wait=True, cancel_futures=True)
+        raise
+    else:
+        pool.shutdown(wait=True)
 
     print(f"\n  Results: {proved} proved, {not_proved} not proved,"
           f" {errors} errors (of {total})")
@@ -594,7 +649,14 @@ def main():
         _import_completed_runs(resume_dir, bench_dir,
                                {r["name"] for r in carried})
 
-    _run_all(problems, lean_project, bench_dir, args, carried=carried)
+    def handle_sigterm(signum, _frame):
+        raise SystemExit(128 + signum)
+
+    previous_sigterm = signal.signal(signal.SIGTERM, handle_sigterm)
+    try:
+        _run_all(problems, lean_project, bench_dir, args, carried=carried)
+    finally:
+        signal.signal(signal.SIGTERM, previous_sigterm)
 
 
 if __name__ == "__main__":

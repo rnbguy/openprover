@@ -1674,7 +1674,8 @@ class Prover:
 
         # ── Verifier phase ──
         verifier_interrupt_count = self._interrupt_count
-        if self.verifier and not worker_interrupted:
+        if (self.verifier and getattr(self, "mode", "prove") == "prove"
+                and not worker_interrupted):
             verifier_resps = self._run_verifiers(tasks, worker_resps, workers_dir)
         else:
             verifier_resps = {}

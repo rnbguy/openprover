@@ -642,10 +642,13 @@ def format_planner_prompt(
         bar = "=" * (len(title) + 2)
         return f"{bar}\n {title}\n{bar}"
 
-    parts = [f"{heading('WHITEBOARD')}\n\n{whiteboard}"]
-
+    parts = []
     if theorem_text:
-        parts.append(f"\n\n{heading('THEOREM')}\n\n{theorem_text}")
+        parts.append(f"{heading('THEOREM')}\n\n{theorem_text}")
+
+    parts.append(
+        ("\n\n" if parts else "") + f"{heading('WHITEBOARD')}\n\n{whiteboard}"
+    )
 
     # Status indicators
     status_lines = [f"- Theorem statement: already present"]

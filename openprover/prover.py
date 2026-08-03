@@ -10,6 +10,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Final
 
 from . import prompts
 from .budget import Budget, BudgetExhausted, ELAPSED_SECONDS_LINE_PATTERN, format_elapsed_seconds
@@ -20,6 +21,8 @@ from .tui import TUI
 from .tui._colors import YELLOW, GREEN, RESET as _RESET
 
 logger = logging.getLogger("openprover")
+
+MAX_CONSECUTIVE_ERRORS: Final = 10
 
 
 def _use_thinking_as_result(resp: dict) -> dict:
@@ -443,7 +446,6 @@ class Prover:
             )
             self._maybe_respawn_interrupted_workers()
 
-        MAX_CONSECUTIVE_ERRORS = 10
         while not self.budget.is_exhausted() and not self.shutting_down and not self._spending_limit_hit:
             self.step_num += 1
             self._current_planner_result = ""
@@ -707,6 +709,7 @@ class Prover:
         parse_error = ""
         last_resp = None
         completed_responses: list[dict] = []
+        consecutive_errors = 0
 
         for attempt in range(MAX_PARSE_RETRIES + 1):
             if attempt > 0:
@@ -731,6 +734,7 @@ class Prover:
                         stream_callback=self._stream_cb("planner"),
                         archive_path=step_dir / f"planner_call{retry_suffix}.md",
                     )
+                    consecutive_errors = 0
                     break  # success
                 except BudgetExhausted:
                     self.tui.stream_end(tab="planner")
@@ -746,7 +750,8 @@ class Prover:
                     logger.error("Planner error: %s", e)
                     self.tui.log(f"Error: {e}", color="red")
                     self._last_error_msg = str(e)
-                    action = self._check_error_policy(e)
+                    consecutive_errors += 1
+                    action = self._retry_action(e, consecutive_errors)
                     if action == "retry":
                         continue
                     self._save_step_meta(step_dir, status="llm_error", error=str(e), resp=last_resp)
@@ -780,6 +785,7 @@ class Prover:
                 if finish in ("length", "max_tokens") and attempt == 0:
                     logger.info("Planner truncated (finish_reason=%s) - Phase 2", finish)
                     self.tui.log("Planner output truncated - forcing decision...", color="yellow")
+                    phase2_errors = 0
                     while True:
                         self.tui.stream_start("forcing decision", tab="planner")
                         try:
@@ -817,6 +823,7 @@ class Prover:
                                     archive_path=step_dir / "planner_call_phase2.md",
                                     max_tokens=phase2_max,
                                 )
+                            phase2_errors = 0
                             break  # success
                         except BudgetExhausted:
                             self.tui.stream_end(tab="planner")
@@ -832,7 +839,8 @@ class Prover:
                             self.tui.stream_end(tab="planner")
                             logger.error("Phase 2 error: %s", e)
                             self.tui.log(f"Error: {e}", color="red")
-                            action = self._check_error_policy(e)
+                            phase2_errors += 1
+                            action = self._retry_action(e, phase2_errors)
                             if action == "retry":
                                 continue
                             self._save_step_meta(
@@ -1773,6 +1781,7 @@ class Prover:
             self.tui.tab_log(wid, f"Context: {context}", dim=True)
         self.tui.tab_log(wid, "")
         search_resp = None
+        consecutive_errors = 0
         while True:
             self.tui.stream_start("searching", tab=wid)
             try:
@@ -1784,6 +1793,7 @@ class Prover:
                     stream_callback=self._stream_cb(wid),
                     archive_path=workers_dir / "search_call.md",
                 )
+                consecutive_errors = 0
                 self.tui.stream_end(tab=wid)
                 result = search_resp["result"]
                 search_resp["error"] = ""
@@ -1817,7 +1827,8 @@ class Prover:
                 break
             except RuntimeError as e:
                 self.tui.stream_end(tab=wid)
-                if self._check_error_policy(e) == "retry":
+                consecutive_errors += 1
+                if self._retry_action(e, consecutive_errors) == "retry":
                     continue
                 result = f"Literature search failed: {e}"
                 self.tui.log(f"Search error: {e}", color="red")
@@ -1873,6 +1884,7 @@ class Prover:
         tool_calls_log: list[dict] = []
         phase1_resp = None
         completed_responses: list[dict] = []
+        consecutive_errors = 0
 
         def _tool_start_cb(name, tool_input):
             logger.info("[%s] %s: starting", worker_id, name)
@@ -1898,6 +1910,7 @@ class Prover:
                     tool_callback=_tool_cb if use_mcp_tools else None,
                     tool_start_callback=_tool_start_cb if use_mcp_tools else None,
                 )
+                consecutive_errors = 0
                 self.tui.stream_end(tab=worker_id)
                 resp = _use_thinking_as_result(resp)
                 completed_responses.append(resp)
@@ -1954,6 +1967,7 @@ class Prover:
                             archive_path=archive_path.parent / f"{archive_path.stem}_phase2.md" if archive_path else None,
                             max_tokens=phase2_max,
                     )
+                    consecutive_errors = 0
                     self.tui.stream_end(tab=worker_id)
                     completed_responses.append(resp2)
                     resp = _compose_responses(*completed_responses)
@@ -1983,7 +1997,8 @@ class Prover:
                 break
             except RuntimeError as e:
                 self.tui.stream_end(tab=worker_id)
-                action = self._check_error_policy(e)
+                consecutive_errors += 1
+                action = self._retry_action(e, consecutive_errors)
                 if action == "retry":
                     continue
                 self.tui.tab_log(worker_id, f"Error: {e}", color="red")
@@ -2007,7 +2022,8 @@ class Prover:
         return total
 
     def _run_worker_multi_turn(self, prompt: str, system_prompt: str,
-                               worker_id: str, archive_path: Path | None) -> dict:
+                               worker_id: str, archive_path: Path | None,
+                               consecutive_errors: int = 0) -> dict:
         """Multi-turn tool-calling worker (vLLM/Mistral)."""
         tool_calls_log: list[dict] = []
         messages = [
@@ -2061,6 +2077,7 @@ class Prover:
                         ),
                         **phase2_kwargs,
                     )
+                    consecutive_errors = 0
                     self.tui.stream_end(tab=worker_id)
                     resp = _use_thinking_as_result(resp)
                     responses.append(resp)
@@ -2100,6 +2117,7 @@ class Prover:
                         ),
                         **phase2_kwargs,
                     )
+                    consecutive_errors = 0
                     self.tui.stream_end(tab=worker_id)
                     responses.append(resp)
                     total_cost += resp["cost"]
@@ -2122,6 +2140,7 @@ class Prover:
                     archive_path=call_archive,
                     **chat_kwargs,
                 )
+                consecutive_errors = 0
                 self.tui.stream_end(tab=worker_id)
                 resp = _use_thinking_as_result(resp)
                 responses.append(resp)
@@ -2218,6 +2237,7 @@ class Prover:
                         ),
                         **phase2_kwargs,
                     )
+                    consecutive_errors = 0
                     self.tui.stream_end(tab=worker_id)
                     responses.append(resp)
                     total_cost += resp["cost"]
@@ -2246,10 +2266,13 @@ class Prover:
                       "error": "interrupted"}
         except RuntimeError as e:
             self.tui.stream_end(tab=worker_id)
-            action = self._check_error_policy(e)
+            consecutive_errors += 1
+            action = self._retry_action(e, consecutive_errors)
             if action == "retry":
                 # Retry: re-enter the multi-turn loop from scratch
-                retry_result = self._run_worker_multi_turn(prompt, system_prompt, worker_id, archive_path)
+                retry_result = self._run_worker_multi_turn(
+                    prompt, system_prompt, worker_id, archive_path, consecutive_errors,
+                )
                 if responses:
                     result = _compose_responses(*responses, retry_result)
                     if "tool_calls_log" in retry_result:
@@ -2331,6 +2354,7 @@ class Prover:
         system_prompt = prompts.verifier_system_prompt()
         phase1_resp = None
         completed_responses: list[dict] = []
+        consecutive_errors = 0
 
         while True:
             self.tui.stream_start("verifying...", tab=verifier_id)
@@ -2342,6 +2366,7 @@ class Prover:
                     stream_callback=self._stream_cb(verifier_id),
                     archive_path=archive_path,
                 )
+                consecutive_errors = 0
                 self.tui.stream_end(tab=verifier_id)
                 resp = _use_thinking_as_result(resp)
                 completed_responses.append(resp)
@@ -2399,7 +2424,8 @@ class Prover:
                             stream_callback=self._stream_cb(verifier_id, output_only=True),
                             archive_path=archive_path.parent / f"{archive_path.stem}_phase2.md" if archive_path else None,
                             max_tokens=phase2_max,
-                        )
+                    )
+                    consecutive_errors = 0
                     self.tui.stream_end(tab=verifier_id)
                     resp2 = _use_thinking_as_result(resp2)
                     completed_responses.append(resp2)
@@ -2430,7 +2456,8 @@ class Prover:
                 break
             except RuntimeError as e:
                 self.tui.stream_end(tab=verifier_id)
-                if self._check_error_policy(e) == "retry":
+                consecutive_errors += 1
+                if self._retry_action(e, consecutive_errors) == "retry":
                     continue
                 accounting = _compose_responses(*completed_responses) if completed_responses else {}
                 resp = {"result": f"Verifier error: {e}", "cost": accounting.get("cost", 0.0),
@@ -2518,8 +2545,12 @@ class Prover:
 
         if self.on_budget_out == "backoff":
             delay = self._backoff_delay
-            self.tui.log(f"Rate limit hit - backing off {delay}s...", color="yellow")
-            time.sleep(delay)
+            remaining = self._remaining_time_seconds()
+            if remaining is not None and remaining <= 0:
+                return "stop"
+            sleep_delay = min(delay, remaining) if remaining is not None else delay
+            self.tui.log(f"Rate limit hit - backing off {sleep_delay}s...", color="yellow")
+            time.sleep(sleep_delay)
             # Escalate: 4 → 16 → 64, cap at 64
             self._backoff_delay = min(delay * 4, 64)
             return "retry"
@@ -2547,8 +2578,12 @@ class Prover:
 
         if self.on_rate_limited == "backoff":
             delay = self._rate_limit_backoff
-            self.tui.log(f"Rate limited (429) - backing off {delay}s...", color="yellow")
-            time.sleep(delay)
+            remaining = self._remaining_time_seconds()
+            if remaining is not None and remaining <= 0:
+                return "stop"
+            sleep_delay = min(delay, remaining) if remaining is not None else delay
+            self.tui.log(f"Rate limited (429) - backing off {sleep_delay}s...", color="yellow")
+            time.sleep(sleep_delay)
             self._rate_limit_backoff = min(delay * 4, 64)
             return "retry"
 
@@ -2568,6 +2603,18 @@ class Prover:
             return action
         return self._check_transient(error)
 
+    def _remaining_time_seconds(self) -> float | None:
+        """Return remaining time for a time budget, if one is active."""
+        if self.budget.mode != "time":
+            return None
+        return max(0.0, self.budget.limit - self.budget.elapsed_seconds())
+
+    def _retry_action(self, error: Exception, consecutive_errors: int) -> str:
+        """Stop before consulting retry policy after consecutive model failures."""
+        if consecutive_errors >= MAX_CONSECUTIVE_ERRORS:
+            return "stop"
+        return self._check_error_policy(error)
+
     def _check_transient(self, error: Exception) -> str:
         """Handle transient errors (timeouts, 502/503/504) with backoff+retry.
 
@@ -2576,8 +2623,12 @@ class Prover:
         if not is_transient_error(error):
             return "continue"
         delay = self._transient_backoff
-        self.tui.log(f"Transient error - retrying in {delay}s...", color="yellow")
-        time.sleep(delay)
+        remaining = self._remaining_time_seconds()
+        if remaining is not None and remaining <= 0:
+            return "stop"
+        sleep_delay = min(delay, remaining) if remaining is not None else delay
+        self.tui.log(f"Transient error - retrying in {sleep_delay}s...", color="yellow")
+        time.sleep(sleep_delay)
         # Escalate: 4 → 8 → 16 → 32 → 60, cap at 60
         self._transient_backoff = min(delay * 2, 60)
         return "retry"

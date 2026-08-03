@@ -13,7 +13,7 @@ inspect.py      Read-only run browser
 llm/
   _base.py      Shared helpers: Interrupted, StreamingUnavailable, archive(), error detection
   claude.py     LLMClient - Claude CLI wrapper (default backend)
-  codex.py      CodexClient - local Codex app-server client
+  codex.py      CodexClient - typed Codex SDK adapter
   mistral.py    MistralClient - Mistral Conversations API (Leanstral)
   glm.py        GLMClient - Z.ai OpenAI-compatible API (GLM-5)
   openrouter.py OpenRouterClient - OpenRouter API (Kimi K2.5, MiniMax M2.5/M2.7)
@@ -74,7 +74,7 @@ Model routing maps short names to backends:
 - `leanstral` - `MistralClient` (Mistral Conversations API)
 - `glm-5` - `GLMClient` (Z.ai native API)
 - `kimi-k2.5`, `minimax-m2.5`, `minimax-m2.7` - `OpenRouterClient`
-- `gpt` - `CodexClient` using `gpt-5.4` through the local Codex app-server
+- `gpt` - `CodexClient` using `gpt-5.6-sol` at high reasoning effort
 
 Run configuration is saved to `run_config.toml` in the work directory on fresh starts and restored on resume. CLI flags override saved values. Version mismatch between the saved config and the running binary is rejected.
 
@@ -114,7 +114,7 @@ When `lean_worker_tools` is enabled, sets up tool calling for workers:
 | Handler | What it does |
 |---------|-------------|
 | `_handle_spawn` | Run worker tasks in parallel via `ThreadPoolExecutor` (up to `--max-workers`). Each worker gets its task description with wikilinks resolved. Results pushed to output window. |
-| `_handle_literature_search` | Spawn a web-enabled `worker_llm`: Claude uses `WebSearch` + `WebFetch`; Codex app-server uses live search. Results fed back to planner. |
+| `_handle_literature_search` | Spawn a web-enabled `worker_llm`: Claude uses `WebSearch` + `WebFetch`; Codex uses live web search. Results fed back to planner. |
 | `_handle_read_items` | Fetch full content of requested repo items, push to output. |
 | `_handle_write_items` | Create/update/delete repo items. Items with `format="lean"` are auto-verified via `lake env lean`. |
 | `_handle_write_whiteboard` | Update the whiteboard without spawning workers. |
@@ -189,13 +189,11 @@ MCP tool calling: When `mcp_config` is set, adds `--mcp-config <json> --strict-m
 Archiving: Every call saved to `archive/calls/call_NNN.json` with full prompt, system prompt, schema, response, cost, timing, and errors.
 
 **`CodexClient`** (`codex.py`):
-- Backs the public `gpt` alias, mapped to `gpt-5.4`; it requires `codex login`
-- Starts `codex app-server --listen stdio:// --session-source mcp`, using stdio only
-- Completes the `initialize`, `initialized`, and `model/list` handshake with `clientInfo.name = "openprover_codex"`
-- Starts ephemeral threads with `approvalPolicy = "never"` and the system prompt in `developerInstructions`
-- Starts turns at high effort, streams text and reasoning, and sends turn interruptions when OpenProver is interrupted
-- Maps `web_search=True` to app-server `thread/start` `config.web_search = "live"`
-- For Lean workers, forwards `mcp_servers.lean_tools` as a required server and enables only `lean_verify` and `lean_search`; Codex does not expose `lean_store`
+- Typed adapter for the pinned `openai-codex==0.144.4` SDK. The public `gpt` alias maps to `gpt-5.6-sol` at high reasoning effort.
+- The SDK owns the bundled runtime, stdio transport, initialization, and model catalog. Its default client name is `codex_python_sdk`, and it reuses existing Codex authentication automatically.
+- Starts ephemeral, read-only, deny-all threads with the system prompt as developer instructions; streams text and reasoning, and interrupts active turns when OpenProver is interrupted.
+- Maps `web_search=True` to live web search. For Lean workers, passes `mcp_servers.lean_tools` only when web search is disabled and exposes `lean_verify` and `lean_search`, not `lean_store`.
+- Accepts `max_tokens` for the shared interface but intentionally ignores it because the 0.144.4 turn API has no max-output argument. Raw usage keys are `input_tokens`, `cached_input_tokens`, `output_tokens`, `reasoning_output_tokens`, and `total_tokens`.
 
 **`MistralClient`** (`mistral.py`):
 - Uses the Mistral Conversations API, which persists context server-side

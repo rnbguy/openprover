@@ -227,6 +227,10 @@ def _load_lean_pages(step_dir: Path, step_num: int) -> list[dict]:
         lean_code = proof_path.read_text()
         result_path = lean_dir / "proof_result.txt"
         result_text = result_path.read_text() if result_path.exists() else "(no result)"
+        if result_text.strip() == "OK":
+            axiom_result_path = lean_dir / "proof_axiom_result.txt"
+            if axiom_result_path.exists():
+                result_text = axiom_result_path.read_text()
         pages.append(_make_lean_page(step_num, "Lean Proof Attempt", lean_code, result_text))
 
     return pages

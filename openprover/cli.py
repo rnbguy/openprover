@@ -16,7 +16,7 @@ from .llm import CodexClient, LLMClient, GLMClient, HFClient, MistralClient, Ope
 from .prover import Prover, slugify
 from .tui import TUI, HeadlessTUI
 
-SUBCOMMANDS = {"inspect", "fetch-lean-data"}
+SUBCOMMANDS = {"inspect"}
 
 RUN_CONFIG_FILE = "run_config.toml"
 
@@ -95,15 +95,7 @@ def main():
         cmd = sys.argv[1]
         if cmd == "inspect":
             return _cmd_inspect()
-        if cmd == "fetch-lean-data":
-            return _cmd_fetch_lean_data()
-
     return _cmd_prove()
-
-
-def _cmd_fetch_lean_data():
-    from .lean.data import fetch_lean_data
-    fetch_lean_data()
 
 
 def _cmd_inspect():
@@ -530,14 +522,6 @@ def _cmd_prove():
             parser.error("--lean-worker-tools requires --lean-project")
         if worker_model not in TOOL_CAPABLE_MODELS:
             parser.error("--lean-worker-tools requires a tool-capable worker model (sonnet, opus, gpt, minimax-m2.5, leanstral, glm-5, kimi-k2.5, or minimax-m2.7)")
-        # Auto-fetch Lean Explore data if not available
-        from .lean.data import is_lean_data_available, fetch_lean_data
-        if not is_lean_data_available():
-            if not args.headless:
-                print(" fetching lean data…", end="", flush=True)
-            if not fetch_lean_data():
-                print("Warning: lean_search will not be available")
-
     def _make_client(model_alias, archive_dir):
         if model_alias in CODEX_MODELS:
             return CodexClient("gpt-5.6-sol", archive_dir)

@@ -329,7 +329,6 @@ class Prover:
             self.history_budget = int(ctx * 4 * 0.15)
 
         # Tool calling for workers
-        self.lean_explore_service = None
         if self.lean_worker_tools:
             if isinstance(self.worker_llm, LLMClient):
                 # Claude CLI: configure MCP server for tool calling
@@ -372,16 +371,7 @@ class Prover:
                 self.worker_llm.mcp_config = mcp_config
                 logger.info("Codex MCP tool calling configured")
             elif getattr(self.worker_llm, 'vllm', False) or getattr(self.worker_llm, 'mistral', False):
-                # vLLM / Mistral: initialize LeanExplore for in-process tool execution
-                try:
-                    from lean_explore.search import SearchEngine, Service
-                    engine = SearchEngine(use_local_data=False)
-                    self.lean_explore_service = Service(engine=engine)
-                    logger.info("LeanExplore service initialized")
-                except ImportError:
-                    logger.warning("lean_explore not installed - lean_search tool disabled")
-                except Exception as e:
-                    logger.warning("LeanExplore init failed: %s", e)
+                logger.info("Native Lean tool calling configured")
             else:
                 logger.warning("lean_worker_tools enabled but worker has no tool support - tools disabled")
 
@@ -2273,7 +2263,6 @@ class Prover:
                         tool_result, tool_status = execute_worker_tool(
                             tool_name, tool_args, worker_id,
                             self.lean_work_dir, self.lean_project_dir,
-                            self.lean_explore_service,
                         )
                         tool_dur_ms = int((time.time() - t0) * 1000)
                         logger.info("[%s] %s: %s (%dms)",

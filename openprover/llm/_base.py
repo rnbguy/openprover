@@ -6,7 +6,9 @@ from pathlib import Path
 
 class Interrupted(Exception):
     """Raised when an LLM call is cancelled via interrupt()."""
-    pass
+
+    def __init__(self, response: dict | None = None):
+        self.response = response
 
 
 class StreamingUnavailable(RuntimeError):

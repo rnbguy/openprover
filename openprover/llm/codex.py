@@ -1,5 +1,8 @@
 """Typed adapter for the local Codex SDK."""
 
+import os
+import shutil
+import tempfile
 import threading
 from pathlib import Path
 from typing import Final
@@ -30,7 +33,17 @@ MODEL: Final = "gpt-5.6-sol"
 _CONFIG_OVERRIDES: Final = (
     "features.shell_tool=false",
     "features.multi_agent=false",
+    "features.plugins=false",
+    "features.apps=false",
 )
+
+
+class CodexTurnError(RuntimeError):
+    """A failed Codex turn that retains its normalized response."""
+
+    def __init__(self, message: str, response: dict):
+        super().__init__(message)
+        self.response = response
 
 
 class CodexClient:
@@ -48,6 +61,7 @@ class CodexClient:
         self.total_cost = 0.0
         self.mcp_config: JsonObject | None = None
         self._codex: Codex | None = None
+        self._codex_home = None
         self._sdk_lock = threading.RLock()
         self._turn_lock = threading.Lock()
         self._interrupted = threading.Event()
@@ -69,9 +83,15 @@ class CodexClient:
         """Close the lazily created SDK runtime once."""
         with self._sdk_lock:
             codex = self._codex
+            codex_home = self._codex_home
             self._codex = None
-        if codex is not None:
-            codex.close()
+            self._codex_home = None
+        try:
+            if codex is not None:
+                codex.close()
+        finally:
+            if codex_home is not None:
+                codex_home.cleanup()
 
     def clear_interrupt(self) -> None:
         """Allow subsequent calls after a hard interrupt."""
@@ -135,19 +155,36 @@ class CodexClient:
             turn_result, streamed_result, streamed_thinking = run_turn(
                 turn, StreamCallbacks(stream_callback, tool_callback, tool_start_callback)
             )
+            duration_ms = turn_result.duration_ms or 0
+            raw = {
+                "turn_id": turn_result.id,
+                "status": turn_result.status.value,
+                "usage": usage_from_result(turn_result),
+                "total_cost_usd": 0.0,
+                "stop_reason": "interrupted" if turn_result.status is TurnStatus.interrupted else "stop",
+            }
+            error_response = {"raw": raw}
             hard, soft = self._interruption_for(turn.id)
             if hard or (turn_result.status is TurnStatus.interrupted and not soft):
                 self._archive(
-                    call_num, label, prompt, system_prompt, json_schema, "interrupted", None,
-                    turn_result.duration_ms or 0, archive_path,
+                    call_num, label, prompt, system_prompt, json_schema, "interrupted", raw,
+                    duration_ms, archive_path,
                 )
-                raise Interrupted()
+                raise Interrupted(error_response)
             if turn_result.status is not TurnStatus.interrupted and turn_result.error is not None:
-                raise RuntimeError(f"Codex turn error: {turn_result.error.message}")
-            if turn_result.status not in (TurnStatus.completed, TurnStatus.interrupted):
-                raise RuntimeError(
-                    f"Codex turn ended with unexpected status {turn_result.status.value}"
+                error = f"Codex turn error: {turn_result.error.message}"
+                self._archive(
+                    call_num, label, prompt, system_prompt, json_schema, error, raw,
+                    duration_ms, archive_path,
                 )
+                raise CodexTurnError(error, error_response)
+            if turn_result.status not in (TurnStatus.completed, TurnStatus.interrupted):
+                error = f"Codex turn ended with unexpected status {turn_result.status.value}"
+                self._archive(
+                    call_num, label, prompt, system_prompt, json_schema, error, raw,
+                    duration_ms, archive_path,
+                )
+                raise CodexTurnError(error, error_response)
 
             finish_reason = (
                 "soft_interrupted"
@@ -158,14 +195,7 @@ class CodexClient:
                 streamed_result if turn_result.status is TurnStatus.interrupted else ""
             )
             thinking = thinking_from_items(turn_result.items) or streamed_thinking
-            raw = {
-                "turn_id": turn_result.id,
-                "status": turn_result.status.value,
-                "usage": usage_from_result(turn_result),
-                "total_cost_usd": 0.0,
-                "stop_reason": finish_reason,
-            }
-            duration_ms = turn_result.duration_ms or 0
+            raw["stop_reason"] = finish_reason
             self._archive(
                 call_num, label, prompt, system_prompt, json_schema, None, raw, duration_ms,
                 archive_path, thinking=thinking, result_text=result,
@@ -190,16 +220,34 @@ class CodexClient:
         with self._sdk_lock:
             if self._codex is not None:
                 return self._codex
-            codex = Codex(CodexConfig(config_overrides=_CONFIG_OVERRIDES))
+            source_home = Path(os.environ.get("CODEX_HOME", Path.home() / ".codex"))
+            source_auth = source_home / "auth.json"
+            codex_home = tempfile.TemporaryDirectory()
+            codex: Codex | None = None
             ready = False
             try:
+                Path(codex_home.name).chmod(0o700)
+                if source_auth.is_file():
+                    isolated_auth = Path(codex_home.name) / "auth.json"
+                    shutil.copyfile(source_auth, isolated_auth)
+                    isolated_auth.chmod(0o600)
+                codex = Codex(
+                    CodexConfig(
+                        config_overrides=_CONFIG_OVERRIDES,
+                        cwd=codex_home.name,
+                        env={"CODEX_HOME": codex_home.name},
+                    )
+                )
                 self._validate_model(codex)
                 self._codex = codex
+                self._codex_home = codex_home
                 ready = True
                 return codex
             finally:
                 if not ready:
-                    codex.close()
+                    if codex is not None:
+                        codex.close()
+                    codex_home.cleanup()
 
     def _validate_model(self, codex: Codex) -> None:
         model = next((entry for entry in codex.models().data if entry.model == self.model), None)

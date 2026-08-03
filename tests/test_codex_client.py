@@ -1,4 +1,8 @@
 import inspect
+import json
+import os
+import stat
+from pathlib import Path
 from threading import Event, Thread
 
 import pytest
@@ -10,11 +14,13 @@ from openai_codex.models import (
     JsonObject,
     Notification,
     ReasoningTextDeltaNotification,
+    ThreadTokenUsageUpdatedNotification,
 )
 from openai_codex.types import ReasoningEffort, ThreadItem, TurnError, TurnStatus
 
 import openprover.llm.codex as codex_module
 from openprover.llm import Interrupted
+from openprover.llm.codex import CodexTurnError
 from tests.codex_fakes import (
     FakeCatalog,
     FakeTurn,
@@ -23,6 +29,7 @@ from tests.codex_fakes import (
     client,
     completed_event,
     result,
+    usage,
 )
 
 
@@ -36,9 +43,10 @@ def test_sdk_adapter_is_lazy_has_expected_context_and_uses_no_manual_transport(
     assert "subprocess" not in inspect.getsource(codex_module)
     assert "_rpc_request" not in inspect.getsource(codex_module)
 
-    codex.call("prompt", "system")
+    response = codex.call("prompt", "system")
 
     assert len(fake.configs) == 1
+    assert response["result"] == "final"
 
 
 @pytest.mark.parametrize(
@@ -89,6 +97,8 @@ def test_call_sets_restrictive_policy_schema_and_normalizes_usage(
     assert fake.configs[0].config_overrides == (
         "features.shell_tool=false",
         "features.multi_agent=false",
+        "features.plugins=false",
+        "features.apps=false",
     )
     assert fake.thread_configs[0]["web_search"] == "disabled"
     assert fake.thread_configs[0]["mcp_servers"] == mcp_config["mcp_servers"]
@@ -173,9 +183,13 @@ def test_streams_typed_text_reasoning_and_mcp_callbacks(monkeypatch: pytest.Monk
 @pytest.mark.parametrize(
     ("status", "error", "expected"),
     [
-        (TurnStatus.failed, None, "failed"),
-        (TurnStatus.in_progress, None, "inProgress"),
-        (TurnStatus.completed, TurnError(message="SDK turn error"), "SDK turn error"),
+        (TurnStatus.failed, None, "Codex turn ended with unexpected status failed"),
+        (TurnStatus.in_progress, None, "Codex turn ended with unexpected status inProgress"),
+        (
+            TurnStatus.completed,
+            TurnError(message="SDK turn error"),
+            "Codex turn error: SDK turn error",
+        ),
     ],
 )
 @pytest.mark.parametrize("streaming", [False, True])
@@ -188,14 +202,37 @@ def test_failed_or_unfinished_turn_never_returns_success(
     streaming: bool,
 ):
     turn_result = result(status=status, error=error)
-    events = [completed_event(status, error)] if streaming else []
+    events = [
+        Notification(
+            method="thread/tokenUsage/updated",
+            payload=ThreadTokenUsageUpdatedNotification(
+                thread_id="thread-1", token_usage=usage(), turn_id="turn-1"
+            ),
+        ),
+        completed_event(status, error),
+    ]
     codex, _ = client(monkeypatch, tmp_path, [FakeTurn("turn-1", turn_result, events)])
+    archive_path = tmp_path / f"{status.value}.md"
 
-    with pytest.raises(RuntimeError, match=expected):
+    with pytest.raises(RuntimeError, match=expected) as raised:
         if streaming:
-            codex.call("prompt", "system", stream_callback=lambda text, kind: None)
+            codex.call(
+                "prompt",
+                "system",
+                archive_path=archive_path,
+                stream_callback=lambda text, kind: None,
+            )
         else:
-            codex.call("prompt", "system")
+            codex.call("prompt", "system", archive_path=archive_path)
+
+    assert isinstance(raised.value, CodexTurnError)
+    assert raised.value.response["raw"]["usage"]["output_tokens"] == 7
+    archived = archive_path.read_text()
+    assert f"error: {expected}\n" in archived
+    assert "output_tokens: 7\n" in archived
+    assert json.loads(archive_path.with_suffix(".raw.json").read_text()) == (
+        raised.value.response["raw"]
+    )
 
 
 def test_soft_interrupt_returns_partial_output(monkeypatch: pytest.MonkeyPatch, tmp_path):
@@ -221,7 +258,7 @@ def test_hard_interrupts_every_concurrent_active_turn(monkeypatch: pytest.Monkey
     first = FakeTurn("turn-1", result(status=TurnStatus.interrupted), block=release)
     second = FakeTurn("turn-2", result(turn_id="turn-2", status=TurnStatus.interrupted), block=release)
     codex, _ = client(monkeypatch, tmp_path, [first, second])
-    outcomes: list[Exception] = []
+    outcomes: list[Interrupted] = []
 
     def call() -> None:
         try:
@@ -243,6 +280,38 @@ def test_hard_interrupts_every_concurrent_active_turn(monkeypatch: pytest.Monkey
     assert first.interrupts == 1
     assert second.interrupts == 1
     assert len(outcomes) == 2
+    assert outcomes[0].response is not None
+    assert outcomes[0].response["raw"]["usage"]["output_tokens"] == 7
+
+
+def test_sdk_home_copies_only_auth_and_preserves_ambient_environment(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+):
+    source_home = tmp_path / "source-codex"
+    source_home.mkdir()
+    source_auth = source_home / "auth.json"
+    source_auth.write_text('{"token":"secret"}')
+    source_auth.chmod(0o644)
+    (source_home / "config.toml").write_text("untrusted = true\n")
+    monkeypatch.setenv("CODEX_HOME", str(source_home))
+    codex, fake = client(monkeypatch, tmp_path, [FakeTurn("turn-1", result())])
+
+    codex.call("prompt", "system")
+
+    config = fake.configs[0]
+    assert config.env is not None
+    isolated_home = Path(config.env["CODEX_HOME"])
+    assert config.env == {"CODEX_HOME": str(isolated_home)}
+    assert config.cwd == str(isolated_home)
+    assert os.environ["CODEX_HOME"] == str(source_home)
+    assert isolated_home != source_home
+    assert stat.S_IMODE(isolated_home.stat().st_mode) == 0o700
+    assert (isolated_home / "auth.json").read_text() == source_auth.read_text()
+    assert stat.S_IMODE((isolated_home / "auth.json").stat().st_mode) == 0o600
+    assert not (isolated_home / "config.toml").exists()
+
+    codex.cleanup()
+    assert not isolated_home.exists()
 
 
 def test_cleanup_closes_started_sdk_once(monkeypatch: pytest.MonkeyPatch, tmp_path):

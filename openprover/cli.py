@@ -637,7 +637,7 @@ def _cmd_prove():
         lean_project_dir=args.lean_project,
         lean_theorem_text=lean_theorem_text,
         proof_md_text=proof_md_text,
-        resumed=resuming and not inspect_mode,
+        resumed=resuming,
         make_worker_llm=make_worker_llm,
         lean_items=args.lean_items,
         lean_worker_tools=args.lean_worker_tools,

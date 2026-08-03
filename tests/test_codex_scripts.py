@@ -175,3 +175,35 @@ def test_putnam_preflight_checks_only_external_cli_models(
     module.main()
 
     assert (checks, parallel_runs) == (expected_checks, [True])
+
+
+@pytest.mark.parametrize("script", ["run_minif2f", "run_proofnet"])
+def test_benchmark_accepts_gpt_without_claude_preflight(monkeypatch, tmp_path, script):
+    module = load_script(script)
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    checks: list[str] = []
+    monkeypatch.setattr(module, "_check_tool", checks.append)
+    monkeypatch.setattr(module, "_run_all", lambda *_args, **_kwargs: None)
+    if script == "run_minif2f":
+        (repo / "lakefile.lean").write_text("")
+        (repo / ".lake").mkdir()
+        source = repo / "MiniF2F"
+        source.mkdir()
+        (source / "Valid.lean").write_text("")
+        monkeypatch.setattr(module, "_parse_theorems", lambda _source: {"example": {}})
+    else:
+        data = repo / "data"
+        data.mkdir()
+        (data / "proofnet.jsonl").write_text("")
+        monkeypatch.setattr(module, "_load_proofnet_problems", lambda *_args: {"example": {}})
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [script, "--repo-path", str(repo), "--model", "gpt", "--informal"],
+    )
+
+    module.main()
+
+    assert checks == []

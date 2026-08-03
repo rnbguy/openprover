@@ -651,28 +651,48 @@ def _cmd_prove():
     if not args.headless:
         print("\r\033[K", end="", flush=True)
 
+    resources_cleaned = False
+
+    def _cleanup_resources():
+        nonlocal resources_cleaned
+        if resources_cleaned:
+            return
+        resources_cleaned = True
+        planner_llm = getattr(prover, "planner_llm", None)
+        worker_llm = getattr(prover, "worker_llm", None)
+        planner_cleanup = getattr(planner_llm, "cleanup", None)
+        try:
+            if planner_cleanup is not None:
+                planner_cleanup()
+        finally:
+            try:
+                if worker_llm is not planner_llm:
+                    worker_cleanup = getattr(worker_llm, "cleanup", None)
+                    if worker_cleanup is not None:
+                        worker_cleanup()
+            finally:
+                lean_work_dir = getattr(prover, "lean_work_dir", None)
+                if lean_work_dir is not None:
+                    lean_work_dir.cleanup()
+
+    atexit.register(_cleanup_resources)
+
+    # SIGTERM: clean up and exit (default SIGTERM would skip atexit)
+    def handle_sigterm(signum, frame):
+        _cleanup_resources()
+        sys.exit(1)
+
+    signal.signal(signal.SIGTERM, handle_sigterm)
+
     # Inspect mode: browse history without running steps
     if inspect_mode:
         try:
             prover.inspect()
         finally:
+            _cleanup_resources()
             tui.cleanup()
             print(f"  {prover.work_dir}")
         return
-
-    # Ensure LLM subprocesses (and their MCP servers) are killed on exit
-    def _cleanup_llm_procs():
-        prover.planner_llm.cleanup()
-        prover.worker_llm.cleanup()
-
-    atexit.register(_cleanup_llm_procs)
-
-    # SIGTERM: clean up and exit (default SIGTERM would skip atexit)
-    def handle_sigterm(signum, frame):
-        _cleanup_llm_procs()
-        sys.exit(1)
-
-    signal.signal(signal.SIGTERM, handle_sigterm)
 
     # ctrl+c handling: TUI calls directly from bg thread; SIGINT for headless
     def handle_sigint(signum, frame):
@@ -684,6 +704,7 @@ def _cmd_prove():
     try:
         prover.run()
     finally:
+        _cleanup_resources()
         cost = prover.planner_llm.total_cost + prover.worker_llm.total_cost
         calls = prover.planner_llm.call_count + prover.worker_llm.call_count
         tui.cleanup()

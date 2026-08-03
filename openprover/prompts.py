@@ -617,8 +617,12 @@ SEARCH_SYSTEM_PROMPT = (
 
 def _truncate_keep_end(text: str, limit: int) -> str:
     """Truncate from the start, keeping the end (where the TOML block is)."""
+    if limit <= 0:
+        return ""
     if len(text) <= limit:
         return text
+    if limit < 4:
+        return text[-limit:]
     return "...\n" + text[-(limit - 4):]
 
 
@@ -686,11 +690,16 @@ def format_planner_prompt(
                 else:
                     outputs = []
 
+            non_empty_count = sum(bool(ao.get("output", "")) for ao in outputs)
+            output_share, output_remainder = divmod(output_limit, non_empty_count) if non_empty_count else (0, 0)
+            output_number = 0
             for i, ao in enumerate(outputs):
                 text = ao.get("output", "")
                 if not text:
                     continue
-                text = _truncate_keep_end(text, output_limit)
+                limit = output_share + (output_number < output_remainder)
+                text = _truncate_keep_end(text, limit)
+                output_number += 1
                 a_action = ao.get("action", "")
                 a_summary = ao.get("summary", "")
                 if len(outputs) > 1:

@@ -3,6 +3,7 @@
 import logging
 import re
 import secrets
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -270,3 +271,7 @@ class LeanWorkDir:
         path = self.dir / "PROOF.lean"
         path.write_text(content)
         return path
+
+    def cleanup(self) -> None:
+        """Remove this work directory. Safe to call multiple times."""
+        shutil.rmtree(self.dir, ignore_errors=True)

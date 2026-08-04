@@ -76,13 +76,18 @@ def test_resume_rejects_stale_saved_model_before_prover_or_backend(
         "planner_model",
         "worker_model",
         "codex_model",
+        "effort",
         "expected_codex",
+        "expected_efforts",
         "expected_other",
     ),
     [
-        ("codex", None, None, None, ["gpt-5.6-sol", "gpt-5.6-sol"], []),
-        ("sonnet", "codex", "sonnet", "gpt-5.6-luna", ["gpt-5.6-luna"], ["sonnet"]),
-        ("sonnet", "sonnet", "codex", "gpt-5.6-terra", ["gpt-5.6-terra"], ["sonnet"]),
+        ("codex", None, None, None, None, ["gpt-5.6-sol", "gpt-5.6-sol"], [None, None], []),
+        ("codex", None, None, None, "high", ["gpt-5.6-sol", "gpt-5.6-sol"], ["high", "high"], []),
+        ("codex", None, None, None, "xhigh", ["gpt-5.6-sol", "gpt-5.6-sol"], ["xhigh", "xhigh"], []),
+        ("codex", None, None, None, "max", ["gpt-5.6-sol", "gpt-5.6-sol"], ["max", "max"], []),
+        ("sonnet", "codex", "sonnet", "gpt-5.6-luna", None, ["gpt-5.6-luna"], [None], ["sonnet"]),
+        ("sonnet", "sonnet", "codex", "gpt-5.6-terra", None, ["gpt-5.6-terra"], [None], ["sonnet"]),
     ],
 )
 def test_planner_and_worker_route_codex_to_configured_model(
@@ -92,10 +97,13 @@ def test_planner_and_worker_route_codex_to_configured_model(
     planner_model,
     worker_model,
     codex_model,
+    effort,
     expected_codex,
+    expected_efforts,
     expected_other,
 ):
     codex_models = []
+    codex_efforts = []
     other_models = []
     theorem = tmp_path / "theorem.md"
     theorem.write_text("theorem")
@@ -114,7 +122,8 @@ def test_planner_and_worker_route_codex_to_configured_model(
             cleanup=lambda: None,
         )
 
-    def make_codex(model_name, _archive_dir):
+    def make_codex(model_name, _archive_dir, effort=None):
+        codex_efforts.append(effort)
         return make_client(codex_models, model_name)
 
     def make_other(model_name, _archive_dir, **_kwargs):
@@ -154,6 +163,8 @@ def test_planner_and_worker_route_codex_to_configured_model(
         argv.extend(["--planner-model", planner_model])
     if worker_model is not None:
         argv.extend(["--worker-model", worker_model])
+    if effort is not None:
+        argv.extend(["--effort", effort])
     monkeypatch.setattr(cli, "CodexClient", make_codex)
     monkeypatch.setattr(cli, "LLMClient", make_other)
     monkeypatch.setattr(cli, "Prover", ProverSpy)
@@ -164,4 +175,40 @@ def test_planner_and_worker_route_codex_to_configured_model(
     cli._cmd_prove()
 
     assert codex_models == expected_codex
+    assert codex_efforts == expected_efforts
     assert other_models == expected_other
+
+
+@pytest.mark.parametrize(
+    ("model", "effort", "message"),
+    [
+        ("sonnet", "xhigh", "--effort xhigh is only supported for Codex models"),
+        ("leanstral", "high", "--effort is only supported for Claude or Codex models"),
+    ],
+)
+def test_effort_rejects_unsupported_model_or_level(
+    monkeypatch, tmp_path, capsys, model, effort, message
+):
+    theorem = tmp_path / "theorem.md"
+    theorem.write_text("theorem")
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "openprover",
+            str(tmp_path / "run"),
+            "--theorem",
+            str(theorem),
+            "--model",
+            model,
+            "--effort",
+            effort,
+            "--headless",
+        ],
+    )
+
+    with pytest.raises(SystemExit) as error:
+        cli._cmd_prove()
+
+    assert error.value.code == 2
+    assert message in capsys.readouterr().err

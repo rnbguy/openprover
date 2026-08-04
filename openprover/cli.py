@@ -253,8 +253,9 @@ def _cmd_prove():
                         help="Run LLM verifier after each worker (default: enabled)")
     parser.add_argument("--answer-reserve", type=int, default=4096, metavar="TOKENS", help="Tokens reserved for answer after thinking (default: 4096)")
     parser.add_argument("--history-budget", type=int, default=0, metavar="CHARS", help="Char budget for planner history (default: auto from model context)")
-    parser.add_argument("--effort", choices=["low", "medium", "high", "max"], default=None,
-                        help="Claude reasoning effort level (default: max for opus, high for others; Claude models only)")
+    parser.add_argument(
+        "--effort", choices=["low", "medium", "high", "xhigh", "max"], default=None,
+                        help="Reasoning effort for Claude or Codex (default: max for opus, high for others)")
     parser.add_argument("--on-budget-out", choices=["backoff", "exit"], default="exit",
                         help="Action when spending/rate limit hit: backoff = exponential retry, exit = stop immediately (default: exit; Claude models only)")
     parser.add_argument("--on-rate-limited", choices=["backoff", "exit"], default="backoff",
@@ -479,12 +480,17 @@ def _cmd_prove():
     # Validate and resolve --effort
     effort_given = _cli_flag_given("--effort")
     if effort_given:
-        non_claude = [m for m in (planner_model, worker_model) if m not in CLAUDE_MODELS]
-        if non_claude:
+        unsupported = [
+            model for model in (planner_model, worker_model)
+            if model not in (CLAUDE_MODELS | CODEX_MODELS)
+        ]
+        if unsupported:
             parser.error(
-                f"--effort is only supported for Claude models (sonnet, opus); "
-                f"got: {', '.join(non_claude)}"
+                "--effort is only supported for Claude or Codex models; "
+                f"got: {', '.join(unsupported)}"
             )
+        if args.effort == "xhigh" and CLAUDE_MODELS.intersection((planner_model, worker_model)):
+            parser.error("--effort xhigh is only supported for Codex models")
         effective_effort = args.effort
     else:
         # Auto-default: highest level for the models in use
@@ -529,7 +535,10 @@ def _cmd_prove():
             parser.error("--lean-worker-tools requires a tool-capable worker model (sonnet, opus, codex, minimax-m2.5, leanstral, glm-5, kimi-k2.5, or minimax-m2.7)")
     def _make_client(model_alias, archive_dir):
         if model_alias in CODEX_MODELS:
-            return CodexClient(get_codex_model(), archive_dir)
+            return CodexClient(
+                get_codex_model(), archive_dir,
+                effort=args.effort if effort_given else None,
+            )
         if model_alias in MISTRAL_MODEL_MAP:
             return MistralClient(MISTRAL_MODEL_MAP[model_alias], archive_dir,
                                  answer_reserve=args.answer_reserve)

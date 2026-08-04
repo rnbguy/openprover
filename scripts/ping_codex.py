@@ -10,12 +10,12 @@ import time
 from pathlib import Path
 
 try:
-    from openprover.llm.codex import CodexClient, Interrupted, MODEL
+    from openprover.llm.codex import CodexClient, Interrupted, get_codex_model
 except ModuleNotFoundError:
     repo_root = Path(__file__).resolve().parents[1]
     if str(repo_root) not in sys.path:
         sys.path.insert(0, str(repo_root))
-    from openprover.llm.codex import CodexClient, Interrupted, MODEL
+    from openprover.llm.codex import CodexClient, Interrupted, get_codex_model
 
 
 def _tool_summary(tool: str, args: dict) -> str:
@@ -109,7 +109,7 @@ def main(argv=None):
     args = build_parser().parse_args(argv)
 
     archive_dir = Path(tempfile.mkdtemp(prefix="ping-codex-archive-"))
-    client = CodexClient(MODEL, archive_dir)
+    client = CodexClient(get_codex_model(), archive_dir)
     if args.lean_project:
         client.mcp_config = _build_mcp_config(args.lean_project)
 

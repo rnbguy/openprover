@@ -25,7 +25,7 @@ Modes:
 - Python 3.10+
 - **Lean search**: internet access to the unauthenticated hosted LeanExplore API. It searches Mathlib, Batteries, Init, Lean, and Std with a 30-second timeout and no retries. The service permits 30 searches/minute/IP. Set `LEAN_EXPLORE_API_URL` to override `https://www.leanexplore.com/api/v2/search`.
 - **Claude** (default): [Claude Code](https://docs.anthropic.com/en/docs/claude-code) (`claude` command on PATH)
-- **Codex** (alternative): bundled `openai-codex==0.144.4` SDK; the public `gpt` alias maps to `gpt-5.6-sol` at high reasoning effort. It reuses existing Codex authentication automatically, and no separately installed `codex` executable is required at runtime
+- **Codex** (alternative): bundled `openai-codex==0.144.4` SDK; select it with `--model codex`. It uses `CODEX_MODEL` as the exact SDK model name, defaulting to `gpt-5.6-sol` at high reasoning effort. It reuses existing Codex authentication automatically, and no separately installed `codex` executable is required at runtime
 - **Leanstral** (alternative): Mistral's Lean-specialized model; requires `MISTRAL_API_KEY` (get one at https://console.mistral.ai/)
 - **GLM** (alternative): requires `GLM_API_KEY`
 - **OpenRouter** (alternative): Kimi K2.5, MiniMax M2.5/M2.7; requires `OPENROUTER_API_KEY`
@@ -72,8 +72,11 @@ openprover --theorem examples/cauchy_schwarz.md --model leanstral
 # Use GLM-5
 openprover --theorem examples/cauchy_schwarz.md --model glm-5
 
-# Use GPT through the Codex SDK
-openprover --theorem examples/infinite_primes.md --model gpt
+# Use the Codex SDK (defaults to gpt-5.6-sol)
+openprover --theorem examples/infinite_primes.md --model codex
+
+# Choose an exact Codex SDK model
+CODEX_MODEL=gpt-5.6-luna openprover --theorem examples/infinite_primes.md --model codex
 
 # Use Kimi K2.5 via OpenRouter
 openprover --theorem examples/cauchy_schwarz.md --model kimi-k2.5
@@ -129,7 +132,7 @@ openprover --theorem examples/addition.md \
 | `--provider-url` | `http://localhost:8000` | Server URL for local models |
 | `--answer-reserve` | `4096` | Tokens reserved for answer after thinking (local models) |
 
-Available models: `sonnet`, `opus` (Claude); `gpt` (Codex, maps to `gpt-5.6-sol` at high reasoning effort); `leanstral` (Mistral, requires `MISTRAL_API_KEY`); `glm-5` (requires `GLM_API_KEY`); `kimi-k2.5`, `minimax-m2.5`, `minimax-m2.7` (OpenRouter, requires `OPENROUTER_API_KEY`). For local models, pass any model name supported by your server together with `--provider-url`. Under `--no-isolation`, literature search requires a Claude or Codex worker; other worker backends force isolation.
+Available models: `sonnet`, `opus` (Claude); `codex` (Codex SDK, with the exact SDK model from `CODEX_MODEL`, default `gpt-5.6-sol`); `leanstral` (Mistral, requires `MISTRAL_API_KEY`); `glm-5` (requires `GLM_API_KEY`); `kimi-k2.5`, `minimax-m2.5`, `minimax-m2.7` (OpenRouter, requires `OPENROUTER_API_KEY`). For local models, pass any model name supported by your server together with `--provider-url`. Under `--no-isolation`, literature search requires a Claude or Codex worker; other worker backends force isolation.
 
 ### TUI controls
 

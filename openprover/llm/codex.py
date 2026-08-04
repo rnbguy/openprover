@@ -1,5 +1,6 @@
 """Typed adapter for the local Codex SDK."""
 
+import os
 import threading
 from pathlib import Path
 from typing import Final
@@ -35,6 +36,11 @@ _CONFIG_OVERRIDES: Final = (
 )
 
 
+def get_codex_model() -> str:
+    """Return the exact model selected for Codex SDK calls."""
+    return os.environ.get("CODEX_MODEL", MODEL)
+
+
 class CodexTurnError(RuntimeError):
     """A failed Codex turn that retains its normalized response."""
 
@@ -49,8 +55,6 @@ class CodexClient:
     context_length = 1_050_000
 
     def __init__(self, model: str, archive_dir: Path, max_output_tokens: int = 128_000):
-        if model != MODEL:
-            raise ValueError(f"CodexClient supports only model {MODEL!r}, got {model!r}")
         del max_output_tokens
         self.model = model
         self.archive_dir = archive_dir

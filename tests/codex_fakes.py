@@ -150,8 +150,10 @@ class FakeThread:
 class FakeCodex:
     catalog: FakeCatalog
     turns: list[FakeTurn]
+    expected_model: str = "gpt-5.6-sol"
     configs: list[CodexConfig] = field(default_factory=list)
     thread_configs: list[JsonObject] = field(default_factory=list)
+    thread_models: list[str] = field(default_factory=list)
     turn_requests: list[FakeTurnRequest] = field(default_factory=list)
     close_calls: int = 0
     _lock: Lock = field(default_factory=Lock)
@@ -172,10 +174,11 @@ class FakeCodex:
         assert approval_mode is ApprovalMode.deny_all
         assert developer_instructions == "system"
         assert ephemeral is True
-        assert model == "gpt-5.6-sol"
+        assert model == self.expected_model
         assert sandbox is Sandbox.read_only
         with self._lock:
             self.thread_configs.append(config)
+            self.thread_models.append(model)
             turn = self.turns.pop(0)
         return FakeThread(turn, self.turn_requests)
 
@@ -192,12 +195,12 @@ class FakeFactory:
         return self.codex
 
 
-def catalog(*efforts: ReasoningEffort) -> FakeCatalog:
+def catalog(*efforts: ReasoningEffort, model: str = "gpt-5.6-sol") -> FakeCatalog:
     return FakeCatalog(
         [
             FakeModel(
                 id="catalog-entry-id",
-                model="gpt-5.6-sol",
+                model=model,
                 supported_reasoning_efforts=[FakeEffort(effort) for effort in efforts],
             )
         ]
@@ -262,7 +265,8 @@ def client(
     tmp_path: Path,
     turns: list[FakeTurn],
     catalog_response: FakeCatalog | None = None,
+    model: str = "gpt-5.6-sol",
 ) -> tuple[CodexClient, FakeCodex]:
-    fake = FakeCodex(catalog_response or catalog(ReasoningEffort.high), turns)
+    fake = FakeCodex(catalog_response or catalog(ReasoningEffort.high, model=model), turns, model)
     monkeypatch.setattr(codex_module, "Codex", FakeFactory(fake))
-    return CodexClient("gpt-5.6-sol", tmp_path), fake
+    return CodexClient(model, tmp_path), fake

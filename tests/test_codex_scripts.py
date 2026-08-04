@@ -1,3 +1,4 @@
+import argparse
 import importlib.util
 import sys
 from pathlib import Path
@@ -14,6 +15,10 @@ def load_script(name: str) -> ModuleType:
     assert spec.loader is not None
     spec.loader.exec_module(module)
     return module
+
+
+class _ParserCaptured(Exception):
+    pass
 
 
 class FakeCodexClient:
@@ -132,8 +137,8 @@ def test_ping_prints_codex_usage_fields(ping_harness, capsys):
 
 @pytest.mark.parametrize(
     "model_and_checks",
-    [("gpt", []), ("sonnet", ["claude"])],
-    ids=["gpt", "sonnet"],
+    [("codex", []), ("sonnet", ["claude"])],
+    ids=["codex", "sonnet"],
 )
 def test_putnam_preflight_checks_only_external_cli_models(
     monkeypatch,
@@ -178,7 +183,7 @@ def test_putnam_preflight_checks_only_external_cli_models(
 
 
 @pytest.mark.parametrize("script", ["run_minif2f", "run_proofnet"])
-def test_benchmark_accepts_gpt_without_claude_preflight(monkeypatch, tmp_path, script):
+def test_benchmark_accepts_codex_without_claude_preflight(monkeypatch, tmp_path, script):
     module = load_script(script)
     repo = tmp_path / "repo"
     repo.mkdir()
@@ -201,9 +206,64 @@ def test_benchmark_accepts_gpt_without_claude_preflight(monkeypatch, tmp_path, s
     monkeypatch.setattr(
         sys,
         "argv",
-        [script, "--repo-path", str(repo), "--model", "gpt", "--informal"],
+        [script, "--repo-path", str(repo), "--model", "codex", "--informal"],
     )
 
     module.main()
 
     assert checks == []
+
+
+@pytest.mark.parametrize(
+    ("script", "expected_models", "model_arguments"),
+    [
+        (
+            "run_minif2f",
+            ("sonnet", "opus", "codex", "minimax-m2.5", "leanstral", "glm-5", "kimi-k2.5"),
+            ("model", "planner_model", "worker_model"),
+        ),
+        (
+            "run_proofnet",
+            ("sonnet", "opus", "codex", "minimax-m2.5", "leanstral", "glm-5", "kimi-k2.5"),
+            ("model", "planner_model", "worker_model"),
+        ),
+        (
+            "run_putnam",
+            ("sonnet", "opus", "codex", "minimax-m2.5", "leanstral"),
+            ("model", "planner_model", "worker_model"),
+        ),
+        (
+            "run_proofbench",
+            ("sonnet", "opus", "codex", "minimax-m2.5"),
+            ("model",),
+        ),
+    ],
+)
+def test_benchmark_model_choices_preserve_explicit_models(
+    monkeypatch, script, expected_models, model_arguments
+):
+    module = load_script(script)
+    captured = []
+    original_parse_args = module.argparse.ArgumentParser.parse_args
+
+    def capture_parser(parser, *_args, **_kwargs):
+        captured.extend(
+            action for action in parser._actions if action.dest in model_arguments
+        )
+        raise _ParserCaptured
+
+    monkeypatch.setattr(module.argparse.ArgumentParser, "parse_args", capture_parser)
+
+    with pytest.raises(_ParserCaptured):
+        module.main()
+
+    monkeypatch.setattr(module.argparse.ArgumentParser, "parse_args", original_parse_args)
+    assert [action.dest for action in captured] == list(model_arguments)
+    for action in captured:
+        assert tuple(action.choices) == expected_models
+        parser = argparse.ArgumentParser()
+        parser.add_argument("--model", choices=action.choices)
+        assert parser.parse_args(["--model", "codex"]).model == "codex"
+        for rejected in ("gpt", "gpt-5.6-terra", "gptish", "claude-4.6"):
+            with pytest.raises(SystemExit):
+                parser.parse_args(["--model", rejected])

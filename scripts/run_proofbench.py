@@ -37,7 +37,7 @@ def main():
     parser = argparse.ArgumentParser(description="Run openprover on a ProofBench problem")
     parser.add_argument("problem", help="Problem ID (e.g. PB-Basic-001)")
     parser.add_argument("--list", action="store_true", help="List available problems and exit")
-    parser.add_argument("--model", default="sonnet", choices=["sonnet", "opus", "gpt", "minimax-m2.5"])
+    parser.add_argument("--model", default="sonnet", choices=["sonnet", "opus", "codex", "minimax-m2.5"])
     parser.add_argument("--provider-url", default="http://localhost:8000",
                         help="Server URL for local models (default: http://localhost:8000)")
     parser.add_argument("--max-time", default="30m",

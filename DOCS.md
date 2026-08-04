@@ -73,11 +73,11 @@ Model routing maps short names to backends:
 - `leanstral` - `MistralClient` (Mistral Conversations API)
 - `glm-5` - `GLMClient` (Z.ai native API)
 - `kimi-k2.5`, `minimax-m2.5`, `minimax-m2.7` - `OpenRouterClient`
-- `gpt` - `CodexClient` using `gpt-5.6-sol` at high reasoning effort
+- `codex` - `CodexClient` using the exact SDK model from `CODEX_MODEL`, defaulting to `gpt-5.6-sol` at high reasoning effort
 
 Run configuration is saved to `run_config.toml` in the work directory on fresh starts and restored on resume. CLI flags override saved values. Version mismatch between the saved config and the running binary is rejected.
 
-Isolation depends on worker web-search capability: `_handle_literature_search` calls `worker_llm`, so `--no-isolation` works with Claude (`sonnet`/`opus`) or Codex (`gpt`) workers. Mistral, GLM, OpenRouter, and local HF/vLLM workers force isolation.
+Isolation depends on worker web-search capability: `_handle_literature_search` calls `worker_llm`, so `--no-isolation` works with Claude (`sonnet`/`opus`) or Codex (`codex`) workers. Mistral, GLM, OpenRouter, and local HF/vLLM workers force isolation.
 
 ### `budget.py`
 
@@ -188,7 +188,7 @@ MCP tool calling: When `mcp_config` is set, adds `--mcp-config <json> --strict-m
 Archiving: Every call saved to `archive/calls/call_NNN.json` with full prompt, system prompt, schema, response, cost, timing, and errors.
 
 **`CodexClient`** (`codex.py`):
-- Typed adapter for the pinned `openai-codex==0.144.4` SDK. The public `gpt` alias maps to `gpt-5.6-sol` at high reasoning effort.
+- Typed adapter for the pinned `openai-codex==0.144.4` SDK. The `codex` CLI selector uses the exact SDK model from `CODEX_MODEL`, defaulting to `gpt-5.6-sol`; the client validates that catalog entry supports high reasoning effort.
 - The SDK owns the bundled runtime, stdio transport, initialization, and model catalog. Its default client name is `codex_python_sdk`, and it reuses existing Codex authentication automatically.
 - Starts ephemeral, read-only, deny-all threads with the system prompt as developer instructions; streams text and reasoning, and interrupts active turns when OpenProver is interrupted.
 - Maps `web_search=True` to live web search. For Lean workers, passes `mcp_servers.lean_tools` only when web search is disabled and exposes only `lean_search`.

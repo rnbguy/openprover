@@ -25,7 +25,7 @@ Modes:
 - Python 3.10+
 - **Lean search**: internet access to the unauthenticated hosted LeanExplore API. It searches Mathlib, Batteries, Init, Lean, and Std with a 30-second timeout and no retries. The service permits 30 searches/minute/IP. Set `LEAN_EXPLORE_API_URL` to override `https://www.leanexplore.com/api/v2/search`.
 - **Claude** (default): [Claude Code](https://docs.anthropic.com/en/docs/claude-code) (`claude` command on PATH)
-- **Codex** (alternative): bundled `openai-codex==0.144.4` SDK; select it with `--model codex`. It uses `CODEX_MODEL` as the exact SDK model name, defaulting to `gpt-5.6-sol` at high reasoning effort. It reuses existing Codex authentication automatically, and no separately installed `codex` executable is required at runtime
+- **Codex** (alternative): bundled `openai-codex==0.144.4` SDK; select it with `--model codex`. It uses `CODEX_MODEL` as the exact SDK model name, defaulting to `gpt-5.6-sol`, and accepts `--effort low`, `medium`, `high`, `xhigh`, or `max`. It reuses existing Codex authentication automatically, and no separately installed `codex` executable is required at runtime
 - **Leanstral** (alternative): Mistral's Lean-specialized model; requires `MISTRAL_API_KEY` (get one at https://console.mistral.ai/)
 - **GLM** (alternative): requires `GLM_API_KEY`
 - **OpenRouter** (alternative): Kimi K2.5, MiniMax M2.5/M2.7; requires `OPENROUTER_API_KEY`
@@ -75,8 +75,8 @@ openprover --theorem examples/cauchy_schwarz.md --model glm-5
 # Use the Codex SDK (defaults to gpt-5.6-sol)
 openprover --theorem examples/infinite_primes.md --model codex
 
-# Choose an exact Codex SDK model
-CODEX_MODEL=gpt-5.6-luna openprover --theorem examples/infinite_primes.md --model codex
+# Choose an exact Codex SDK model and reasoning effort
+CODEX_MODEL=gpt-5.6-luna openprover --theorem examples/infinite_primes.md --model codex --effort high
 
 # Use Kimi K2.5 via OpenRouter
 openprover --theorem examples/cauchy_schwarz.md --model kimi-k2.5
@@ -116,7 +116,7 @@ openprover --theorem examples/addition.md \
 | `--autonomous` | off | Run without human confirmation |
 | `-P, --max-workers` | `1` | Max parallel workers per step |
 | `--verifier` / `--no-verifier` | on | Run LLM verifier after each worker |
-| `--effort` | auto | Claude reasoning effort: `low`, `medium`, `high`, `max` (max for opus, high for others) |
+| `--effort` | auto | Reasoning effort: `low`, `medium`, `high`, `max`; Codex also supports `xhigh` |
 | `--isolation` / `--no-isolation` | on | Isolation disables web access; use `--no-isolation` to enable `literature_search` |
 | `--history-budget` | auto | Char budget for planner history context |
 | `--on-budget-out` | `exit` | Action when spending/rate limit hit: `backoff` or `exit` (Claude only) |

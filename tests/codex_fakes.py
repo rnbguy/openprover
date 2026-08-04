@@ -266,7 +266,8 @@ def client(
     turns: list[FakeTurn],
     catalog_response: FakeCatalog | None = None,
     model: str = "gpt-5.6-sol",
+    effort: str | None = None,
 ) -> tuple[CodexClient, FakeCodex]:
     fake = FakeCodex(catalog_response or catalog(ReasoningEffort.high, model=model), turns, model)
     monkeypatch.setattr(codex_module, "Codex", FakeFactory(fake))
-    return CodexClient(model, tmp_path), fake
+    return CodexClient(model, tmp_path, effort=effort), fake

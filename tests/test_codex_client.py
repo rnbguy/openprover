@@ -64,6 +64,43 @@ def test_catalog_requires_executable_model_and_high_effort(
     assert fake.close_calls == 1
 
 
+@pytest.mark.parametrize("effort", ["medium", "xhigh", "max"])
+def test_call_uses_requested_supported_effort(
+    monkeypatch: pytest.MonkeyPatch, tmp_path, effort: str
+):
+    requested = ReasoningEffort(effort)
+    codex, fake = client(
+        monkeypatch,
+        tmp_path,
+        [FakeTurn("turn-1", result())],
+        catalog(requested),
+        effort=effort,
+    )
+
+    codex.call("prompt", "system")
+
+    assert fake.turn_requests == [
+        FakeTurnRequest(ApprovalMode.deny_all, requested, Sandbox.read_only, None)
+    ]
+
+
+def test_catalog_rejects_requested_unsupported_effort(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+):
+    codex, fake = client(
+        monkeypatch,
+        tmp_path,
+        [],
+        catalog(ReasoningEffort.high),
+        effort="medium",
+    )
+
+    with pytest.raises(RuntimeError, match="medium reasoning"):
+        codex.call("prompt", "system")
+
+    assert fake.close_calls == 1
+
+
 @pytest.mark.parametrize("model", ["gpt-5.6-luna", "gpt-5.6-terra"])
 def test_exact_codex_models_reach_thread_start(
     monkeypatch: pytest.MonkeyPatch, tmp_path, model: str

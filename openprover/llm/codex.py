@@ -54,9 +54,16 @@ class CodexClient:
 
     context_length = 1_050_000
 
-    def __init__(self, model: str, archive_dir: Path, max_output_tokens: int = 128_000):
+    def __init__(
+        self,
+        model: str,
+        archive_dir: Path,
+        max_output_tokens: int = 128_000,
+        effort: str | None = None,
+    ):
         del max_output_tokens
         self.model = model
+        self.effort = ReasoningEffort(effort or "high")
         self.archive_dir = archive_dir
         self.call_count = 0
         self.total_cost = 0.0
@@ -140,7 +147,7 @@ class CodexClient:
         turn = thread.turn(
             prompt,
             approval_mode=ApprovalMode.deny_all,
-            effort=ReasoningEffort.high,
+            effort=self.effort,
             output_schema=json_schema,
             sandbox=Sandbox.read_only,
         )
@@ -231,8 +238,10 @@ class CodexClient:
         if model is None:
             raise RuntimeError(f"Codex model catalog does not advertise {self.model!r}")
         efforts = {option.reasoning_effort for option in model.supported_reasoning_efforts}
-        if ReasoningEffort.high not in efforts:
-            raise RuntimeError(f"Codex model {self.model!r} does not advertise high reasoning")
+        if self.effort not in efforts:
+            raise RuntimeError(
+                f"Codex model {self.model!r} does not advertise {self.effort.value} reasoning"
+            )
 
     def _thread_config(self, web_search: bool) -> JsonObject:
         config: JsonObject = {"web_search": "live" if web_search else "disabled"}

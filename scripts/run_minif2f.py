@@ -505,6 +505,12 @@ def main():
             if key not in old_config:
                 continue
             old_val = old_config[key]
+            if key in ("model", "planner_model", "worker_model") \
+                    and old_val is not None and old_val not in model_choices:
+                parser.error(
+                    f"--resume: saved --{key.replace('_', '-')} has "
+                    f"unsupported model selector {old_val!r}"
+                )
             if key in _RESUME_PATH_KEYS and old_val is not None:
                 old_val = Path(old_val)
             cli_val = getattr(args, key, None)
@@ -516,6 +522,9 @@ def main():
                 )
             setattr(args, key, old_val)
         print(f"  Resuming from {resume_dir}")
+
+    if args.method == "baseline" and args.model == "codex":
+        parser.error("--method baseline does not support --model codex")
 
     # ── Resolve Lean project ──
     lean_project: Path | None = None

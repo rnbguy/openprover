@@ -1,4 +1,3 @@
-import argparse
 import sys
 from types import SimpleNamespace
 
@@ -7,47 +6,68 @@ import pytest
 from openprover import cli
 
 
-class _ParserCaptured(Exception):
-    pass
-
-
-def test_openprover_model_choices_preserve_explicit_models(monkeypatch):
-    captured = []
-    expected_models = (
-        "sonnet",
-        "opus",
-        "codex",
-        "minimax-m2.5",
-        "leanstral",
-        "glm-5",
-        "kimi-k2.5",
-        "minimax-m2.7",
+def save_resume_config(work_dir):
+    work_dir.mkdir()
+    cli._save_run_config(
+        work_dir,
+        planner_model="sonnet",
+        worker_model="sonnet",
+        budget_mode="time",
+        budget_limit=100,
+        conclude_after=0.99,
+        max_workers=1,
+        isolation=True,
+        autonomous=True,
+        mode="prove",
+        lean_project_dir=None,
+        lean_items=False,
+        lean_worker_tools=False,
+        provider_url="http://127.0.0.1:8000",
+        answer_reserve=4096,
+        history_budget=0,
+        verifier=True,
     )
-    original_parse_args = cli.argparse.ArgumentParser.parse_args
+    (work_dir / "THEOREM.md").write_text("# theorem\n")
+    (work_dir / "WHITEBOARD.md").write_text("whiteboard\n")
 
-    def capture_parser(parser, *_args, **_kwargs):
-        captured.extend(
-            action
-            for action in parser._actions
-            if action.dest in ("model", "planner_model", "worker_model")
-        )
-        raise _ParserCaptured
 
-    monkeypatch.setattr(cli.argparse.ArgumentParser, "parse_args", capture_parser)
+@pytest.mark.parametrize("field", ["planner_model", "worker_model"])
+@pytest.mark.parametrize("value", ["gpt", "gpt-5.6-sol"])
+def test_resume_rejects_stale_saved_model_before_prover_or_backend(
+    monkeypatch, tmp_path, capsys, field, value,
+):
+    work_dir = tmp_path / "run"
+    save_resume_config(work_dir)
+    config_path = work_dir / cli.RUN_CONFIG_FILE
+    config_path.write_text(
+        config_path.read_text().replace(
+            f'{field} = "sonnet"', f'{field} = "{value}"',
+        ),
+    )
+    created = {"prover": False, "backend": False}
 
-    with pytest.raises(_ParserCaptured):
+    def unexpected_prover(*_args, **_kwargs):
+        created["prover"] = True
+        raise AssertionError("Prover construction must not occur")
+
+    def unexpected_backend(*_args, **_kwargs):
+        created["backend"] = True
+        raise AssertionError("Backend construction must not occur")
+
+    monkeypatch.delenv("CODEX_MODEL", raising=False)
+    monkeypatch.setattr(cli, "Prover", unexpected_prover)
+    monkeypatch.setattr(cli, "LLMClient", unexpected_backend)
+    monkeypatch.setattr(cli, "CodexClient", unexpected_backend)
+    monkeypatch.setattr(sys, "argv", ["openprover", str(work_dir), "--headless"])
+
+    with pytest.raises(SystemExit) as error:
         cli._cmd_prove()
 
-    monkeypatch.setattr(cli.argparse.ArgumentParser, "parse_args", original_parse_args)
-    assert [action.dest for action in captured] == ["model", "planner_model", "worker_model"]
-    for action in captured:
-        assert tuple(action.choices) == expected_models
-        parser = argparse.ArgumentParser()
-        parser.add_argument("--model", choices=action.choices)
-        assert parser.parse_args(["--model", "codex"]).model == "codex"
-        for rejected in ("gpt", "gpt-5.6-terra", "gptish", "claude-4.6"):
-            with pytest.raises(SystemExit):
-                parser.parse_args(["--model", rejected])
+    stderr = capsys.readouterr().err
+    assert error.value.code == 2
+    assert field in stderr
+    assert value in stderr
+    assert created == {"prover": False, "backend": False}
 
 
 @pytest.mark.parametrize(

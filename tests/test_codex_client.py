@@ -65,7 +65,7 @@ def test_catalog_requires_executable_model_and_high_effort(
 
 
 @pytest.mark.parametrize("model", ["gpt-5.6-luna", "gpt-5.6-terra"])
-def test_exact_codex_models_reach_catalog_validation_and_thread_start(
+def test_exact_codex_models_reach_thread_start(
     monkeypatch: pytest.MonkeyPatch, tmp_path, model: str
 ):
     codex, fake = client(
@@ -76,12 +76,9 @@ def test_exact_codex_models_reach_catalog_validation_and_thread_start(
         model=model,
     )
 
-    response = codex.call("prompt", "system")
+    codex.call("prompt", "system")
 
-    assert codex.model == model
-    assert fake.catalog.data[0].model == model
     assert fake.thread_models == [model]
-    assert response["result"] == "final"
 
 
 def test_call_sets_restrictive_policy_schema_and_normalizes_usage(

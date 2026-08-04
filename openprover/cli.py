@@ -391,6 +391,10 @@ def _cmd_prove():
                     f"v{saved_version}, but current version is v{__version__}. "
                     f"Cannot resume across different versions."
                 )
+            for saved_field in ("planner_model", "worker_model"):
+                saved_model = saved.get(saved_field)
+                if saved_model not in model_choices:
+                    parser.error(f"saved {saved_field} is unsupported: {saved_model!r}")
             initial_output_tokens = saved.get("budget_output_tokens")
             if type(initial_output_tokens) is not int or initial_output_tokens < 0:
                 parser.error(
@@ -516,13 +520,12 @@ def _cmd_prove():
         print(f"  {label} openprover ({_model_hint}) ...", end="", flush=True)
 
     # Resolve --lean-worker-tools default
-    worker_tool_capable = worker_model in TOOL_CAPABLE_MODELS
     if args.lean_worker_tools is None:
-        args.lean_worker_tools = args.lean_project is not None and worker_tool_capable
+        args.lean_worker_tools = (args.lean_project is not None and worker_model in TOOL_CAPABLE_MODELS)
     if args.lean_worker_tools:
         if not args.lean_project:
             parser.error("--lean-worker-tools requires --lean-project")
-        if not worker_tool_capable:
+        if worker_model not in TOOL_CAPABLE_MODELS:
             parser.error("--lean-worker-tools requires a tool-capable worker model (sonnet, opus, codex, minimax-m2.5, leanstral, glm-5, kimi-k2.5, or minimax-m2.7)")
     def _make_client(model_alias, archive_dir):
         if model_alias in CODEX_MODELS:
